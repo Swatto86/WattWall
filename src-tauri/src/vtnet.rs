@@ -182,8 +182,8 @@ fn short_error(err: &reqwest::Error) -> String {
     }
 }
 
-/// Test mode: curl.exe is flagged, notepad.exe is clean, anything else is
-/// unknown, and an all-zero key is rejected.
+/// Test mode: curl.exe is flagged, every other file is clean, and an
+/// all-zero key is rejected.
 pub fn fake_lookup(dir: &Path, path: &str, sha256: &str, key: &str) -> Result<Lookup, LookupError> {
     if key.bytes().all(|byte| byte == b'0') {
         return Err(LookupError::KeyRejected);
@@ -213,13 +213,12 @@ pub fn fake_lookup(dir: &Path, path: &str, sha256: &str, key: &str) -> Result<Lo
                 "Delta: Heur.Test".into(),
             ],
         }),
-        "notepad.exe" => Lookup::Found(Report {
+        _ => Lookup::Found(Report {
             malicious: 0,
             suspicious: 0,
             engines: 70,
             names: Vec::new(),
         }),
-        _ => Lookup::Unknown,
     })
 }
 
