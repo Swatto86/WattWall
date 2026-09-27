@@ -3,7 +3,7 @@
 //! that have been seen, and the autostart preference.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -150,6 +150,16 @@ impl Engine {
         self.live
     }
 
+    /// The debug build's test mode (WATTWALL_FAKE=1): fake firewall, fake
+    /// connections, and no Credential Manager or network for VirusTotal.
+    pub fn is_test_copy(&self) -> bool {
+        !self.live
+    }
+
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
     pub fn autostart(&self) -> task::Autostart {
         if self.live {
             task::status()
@@ -181,6 +191,7 @@ pub fn cleanup(rules: bool, task_too: bool, data: bool) -> Result<(), String> {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => return Err(err.to_string()),
         }
+        crate::vault::forget_key()?;
     }
     Ok(())
 }

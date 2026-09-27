@@ -13,6 +13,30 @@ export interface Row {
   needsConfirmation: boolean;
   cannotBlock: boolean;
   warning: string;
+  /** Null while the VirusTotal check is off. */
+  virustotal: VtRow | null;
+}
+
+/** One program's VirusTotal answer. */
+export interface VtRow {
+  state: "pending" | "found" | "unknown" | "unreadable";
+  malicious: number;
+  suspicious: number;
+  engines: number;
+  names: string[];
+  sha256: string;
+  checkedAt: number | null;
+}
+
+export interface VtSummary {
+  enabled: boolean;
+  hasKey: boolean;
+  perMinute: number;
+  perDay: number;
+  checked: number;
+  total: number;
+  status: string;
+  tone: Tone;
 }
 
 export interface AppState {
@@ -25,6 +49,7 @@ export interface AppState {
   autostartAvailable: boolean;
   autostartReason: string;
   elevated: boolean;
+  virustotal: VtSummary;
 }
 
 /** The `traffic` event, once a second. */
@@ -98,4 +123,46 @@ export function meterLevel(bytesPerSecond: number): number {
   const low = Math.log10(1024);
   const high = Math.log10(10 * 1024 * 1024);
   return Math.min(1, Math.max(0.04, (Math.log10(bytesPerSecond) - low) / (high - low)));
+}
+
+/** The VirusTotal chip on a row; null while the check is off. */
+export function vtLabel(vt: VtRow | null): Label | null {
+  if (!vt) return null;
+  switch (vt.state) {
+    case "pending":
+      return { tone: "muted", text: "VT …", title: "Waiting for its VirusTotal lookup." };
+    case "unknown":
+      return { tone: "muted", text: "VT unknown", title: "VirusTotal has no record of this file." };
+    case "unreadable":
+      return { tone: "muted", text: "VT n/a", title: "WattWall could not read this file to hash it." };
+    case "found": {
+      const tone: Tone = vt.malicious >= 3 ? "bad" : vt.malicious > 0 || vt.suspicious > 0 ? "warn" : "ok";
+      return { tone, text: `VT ${vt.malicious}/${vt.engines}`, title: vtVerdict(vt) };
+    }
+  }
+}
+
+/** One sentence about a VirusTotal answer. */
+export function vtVerdict(vt: VtRow): string {
+  if (vt.state === "unknown") return "VirusTotal has no record of this file.";
+  const engines = `${vt.engines} security engine${vt.engines === 1 ? "" : "s"}`;
+  if (vt.malicious === 0 && vt.suspicious === 0) return `None of ${engines} flag this file.`;
+  const parts = [];
+  if (vt.malicious > 0) parts.push(`${vt.malicious} of ${engines} flag this file as malicious`);
+  if (vt.suspicious > 0) parts.push(`${vt.suspicious} as suspicious`);
+  return `${parts.join(" and ")}.`;
+}
+
+/** The report page for a hash, or null if it is not a SHA-256. */
+export function vtLink(sha256: string): string | null {
+  return /^[0-9a-f]{64}$/.test(sha256) ? `https://www.virustotal.com/gui/file/${sha256}` : null;
+}
+
+/** Limits typed into the setup dialog, or a reason they are not usable. */
+export function vtLimits(perMinute: string, perDay: string): { perMinute: number; perDay: number } | string {
+  const minute = Number(perMinute);
+  const day = Number(perDay);
+  if (!Number.isInteger(minute) || !Number.isInteger(day)) return "Enter whole numbers for the limits.";
+  if (minute < 1 || day < 1) return "Both limits must be at least 1.";
+  return { perMinute: minute, perDay: day };
 }

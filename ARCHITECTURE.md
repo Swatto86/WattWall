@@ -16,16 +16,17 @@ WattWall is a Windows tray program. It adds block rules for chosen executables t
 
 ## Component map
 
-- `crates/wattwall-core`: which rules are ours, which programs need a warning, how the Blocked and Seen lists are built, which path autostart may point at. `meter.rs` draws the tray glyph as RGBA and turns byte counters into bar heights and rate text.
+- `crates/wattwall-core`: `virustotal.rs` reads reports, decides when a file is due again and paces lookups within the owner's limits. Also: which rules are ours, which programs need a warning, how the Blocked and Seen lists are built, which path autostart may point at. `meter.rs` draws the tray glyph as RGBA and turns byte counters into bar heights and rate text.
 - `src-tauri/src/firewall.rs`: create, enable, disable and delete only our rules. Debug builds can use a JSON stand-in when `WATTWALL_FAKE=1`.
 - `src-tauri/src/net.rs`: connection snapshot and closing TCP for one program.
 - `src-tauri/src/traffic.rs`: adapter byte counters for the meter.
 - `src-tauri/src/programs.rs`: pid to path, icon, publisher (only when the signature checks out), elevation, final path.
 - `src-tauri/src/task.rs`: create, read and delete the logon task.
 - `src-tauri/src/engine.rs`: block, allow, suspend, remember, cleanup.
-- `src-tauri/src/tray.rs`: tray menu and tooltip, and the one-second loop that redraws the tray, title-bar and taskbar icons. `taskbar.rs` sets the window's big icon, which Tauri does not expose.
+- `src-tauri/src/tray.rs`: tooltip and the one-second loop that redraws the tray, title-bar and taskbar icons and swaps in the menu. `traymenu.rs` describes the menu as a plan, handles its items and tells whether a WattWall menu is open. `taskbar.rs` sets the window's big icon, which Tauri does not expose.
+- `src-tauri/src/virustotal.rs`: the VirusTotal check's state, the worker that hashes and looks up one thing at a time, and what the window gets. `vtnet.rs` hashes files and makes the request (or the test mode's table). `vault.rs` seals the key in `secrets.bin` with AES-256-GCM (`ring`) under a key kept in Credential Manager.
 - `src-tauri/src/lib.rs`: window, commands, the poll and traffic threads. `main.rs` handles `--cleanup`, `--cleanup-rules`, `--remove-task` and elevation.
-- `src/main.ts`: wires up the state and traffic events, commands, dialogs and updates. `src/view.ts`: markup and the two lists, updated in place. `src/model.ts`: the wording and scales, with `model.selfcheck.ts`.
+- `src/main.ts`: wires up the state and traffic events, commands, dialogs and updates. `src/view.ts`: markup and the two lists, updated in place. `src/model.ts`: the wording and scales, with `model.selfcheck.ts`. `src/vt.ts`: the VirusTotal settings, setup dialog and details dialog.
 - `src-tauri/icons/source/*.svg`: app icon sources; `scripts/icons.mjs` renders every icon file from them.
 - `scripts/verify.ps1`: full gate. `scripts/e2e.mjs`: WebDriver journey on an isolated profile.
 
@@ -34,6 +35,8 @@ WattWall is a Windows tray program. It adds block rules for chosen executables t
 The poll thread reads the connection tables and our firewall rules, updates last-seen times, and emits a `state` event. The window draws that. A Block or Allow click sends the path to `set_blocked`. Rust canonicalises the path, refuses `System`, and asks for confirmation for the named dangerous programs unless the caller already confirmed. It then writes or deletes the two rules. If the block is in force, it closes that program's TCP connections. Suspend sets `Enabled` on every WattWall rule and, when turning blocks back on, closes those connections again.
 
 A second thread reads the adapter counters every second. It redraws the tray icon (small-icon size), the window's title-bar icon (the same image) and its taskbar icon (large-icon size) when a bar height or the paused state changes, updates the tooltip, and emits a `traffic` event that the header's rates and graph draw. Only this thread talks to Windows about icons; the poll thread just records whether blocks are off.
+
+A third thread runs the VirusTotal check when it is on. Each second it takes one step: hash the next listed program whose file is new or changed (connected programs first, then blocked, then the rest), or, when the pacer allows, look up the next hash that has no fresh answer. An answer refreshes the window. Only hashes and the key leave the PC.
 
 Settings are written to a temp file and renamed. A failed write leaves the previous file.
 

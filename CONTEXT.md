@@ -44,6 +44,18 @@ Only the traffic thread hands icons and the tooltip to Windows, and only when a 
 
 The app icon (installer, exe, Start menu) is the static orange tile from `src-tauri/icons/source`. Its 16-pixel layer is drawn separately with three courses of bricks, because four blur together at that size.
 
+## VirusTotal
+
+At the owner's request WattWall can check programs with VirusTotal, like Process Explorer. It is off until he turns it on; the setup dialog asks for his own API key and his key's limits (lookups a minute and a day), starting from the free Public API's 4 and 500, because keys differ and he wanted to set them rather than have them fixed. Only a file's SHA-256 is sent, never the file, which tells VirusTotal which programs he runs; the dialog says so. Answers are kept in `virustotal.json`: a found file is looked up again after a week, an unknown one after a day. A "quota used up" answer (429) pauses lookups for five minutes, and for an hour after three in a row. A rejected key (401 or 403) stops lookups until a new key is saved.
+
+The key is sealed in `secrets.bin` (AES-256-GCM, fresh nonce, temp file and rename) under a 32-byte key that is the only Credential Manager item, read at most once per process; an absent file costs no Credential Manager read. This is the vault pattern from WattMail, built with `ring` and the Credential Manager API because both were already in the build (no `aes-gcm` or `keyring` crates). The key goes from the setup dialog to Rust once and is never sent back to the window. `--cleanup` removes the folder and the Credential Manager item.
+
+Clicking a result opens a details dialog with the detections and a Copy report link button. WattWall runs elevated, so it does not open a browser itself.
+
+## Tray menu
+
+A left click opens the window; the menu is on the right click only (Tauri shows it on both by default, and the window opening closed it at once). The menu starts with the state line, then "Online now: tick one to block it" over the programs online now, sorted by name and marked (blocked) or (block paused). It is described by a plan and replaced only when the plan changes, and nothing changes the tray, its menu or the window icons while a WattWall popup menu is on screen. Before this, the menu closed itself about a second after it opened; a foreground right-click probe showed it.
+
 ## Updates
 
 Same shape as WattMail: check the signed `latest.json` at launch and every four hours, download, install and relaunch with only a banner. The install is quiet. Because this process is already elevated, the per-machine installer inherits that and does not show a second UAC prompt. The uninstall hook sees a silent update and does not ask about rules and does not remove the logon task. A real uninstall asks about the rules and always removes the task.

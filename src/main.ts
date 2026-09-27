@@ -8,6 +8,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { matches } from "./filter";
 import { headline, meterLevel, type AppState, type Row, type Traffic } from "./model";
 import { applyLabel, banner, pathKey, RowList, SHELL } from "./view";
+import { setUpVirusTotal } from "./vt";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = SHELL;
@@ -33,8 +34,21 @@ let working = 0;
 const busyPaths = new Set<string>();
 const UPDATE_EVERY_MS = 4 * 60 * 60 * 1000;
 
-const blockedList = new RowList($("#blocked"), (row) => void onToggle(row));
-const seenList = new RowList($("#seen"), (row) => void onToggle(row));
+const virusTotal = setUpVirusTotal({
+  $,
+  openDialog,
+  closeDialog,
+  state: () => state,
+  update: (next) => {
+    state = next;
+    paint();
+  },
+  say: (message) => {
+    settingsMsg.textContent = message;
+  },
+});
+const blockedList = new RowList($("#blocked"), (row) => void onToggle(row), (row) => virusTotal.openDetails(row));
+const seenList = new RowList($("#seen"), (row) => void onToggle(row), (row) => virusTotal.openDetails(row));
 
 function paint(): void {
   if (!state) return;
@@ -76,6 +90,7 @@ function paint(): void {
   autostart.disabled = !state.autostartAvailable;
   $("#autostart-reason").textContent =
     state.autostartReason || "Opens hidden in the tray when you sign in, with no administrator prompt.";
+  virusTotal.paint(state);
 }
 
 async function onToggle(row: Row): Promise<void> {
@@ -114,26 +129,32 @@ async function apply(path: string, blocked: boolean, confirmed: boolean): Promis
   }
 }
 
-// Dialogs: the rest of the window is inert while one is open, and focus
-// returns to where it was when the last one closes.
-let returnFocus: HTMLElement | null = null;
-const overlays = [noticeOverlay, confirmOverlay, settingsOverlay];
-const isOpen = () => overlays.some((overlay) => !overlay.classList.contains("hidden"));
+// Dialogs stack: everything under the top one is inert, and closing one
+// returns focus to where it was when that dialog opened.
+const opened: { overlay: HTMLElement; back: HTMLElement | null }[] = [];
+const isOpen = () => opened.length > 0;
 
 function openDialog(overlay: HTMLElement, focus: HTMLElement): void {
-  if (!isOpen() && document.activeElement instanceof HTMLElement) returnFocus = document.activeElement;
+  const back = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const under = opened[opened.length - 1];
+  if (under) under.overlay.inert = true;
+  opened.push({ overlay, back });
+  overlay.inert = false;
   overlay.classList.remove("hidden");
   shell.inert = true;
   focus.focus();
 }
 
 function closeDialog(overlay: HTMLElement): void {
+  const index = opened.findIndex((entry) => entry.overlay === overlay);
   overlay.classList.add("hidden");
   if (overlay === confirmOverlay) pending = null;
-  if (isOpen()) return;
-  shell.inert = false;
-  returnFocus?.focus();
-  returnFocus = null;
+  if (index < 0) return;
+  const [entry] = opened.splice(index, 1);
+  const top = opened[opened.length - 1];
+  if (top) top.overlay.inert = false;
+  else shell.inert = false;
+  entry.back?.focus();
 }
 
 function notice(text: string): void {
@@ -141,7 +162,7 @@ function notice(text: string): void {
   openDialog(noticeOverlay, $("#notice-ok"));
 }
 
-for (const overlay of overlays) {
+for (const overlay of [...virusTotal.overlays, noticeOverlay, confirmOverlay, settingsOverlay]) {
   overlay.addEventListener("mousedown", (event) => {
     if (event.target === overlay) closeDialog(overlay);
   });
@@ -199,10 +220,10 @@ $("#notice-ok").addEventListener("click", () => closeDialog(noticeOverlay));
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
-    const top = overlays.find((overlay) => !overlay.classList.contains("hidden"));
+    const top = opened[opened.length - 1];
     if (top) {
       event.preventDefault();
-      closeDialog(top);
+      closeDialog(top.overlay);
     }
     return;
   }

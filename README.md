@@ -10,13 +10,18 @@ WattWall blocks the programs you choose, using the Windows Firewall that is alre
 - **Blocks in one click.** Block adds two firewall rules for that program's file, outbound and inbound, and closes the connections it already has. Allow removes them. Block a program lets you pick any `.exe`.
 - **Turn all blocks off, and on again.** Handy for checking whether a block is what stopped something working. The rules are switched off, not deleted.
 - **Live tray and taskbar icon.** A small brick wall with a red bar for data sent and a green bar for data received, redrawn every second, like ZoneAlarm's tray meter. The wall turns grey while blocks are off. The taskbar button shows the same icon while the window is open, and the window header shows the last minute as a graph.
+- **Checks programs with VirusTotal, if you want.** Like Process Explorer, WattWall can look up each program's SHA-256 hash and show how many security engines flag it, for example VT 0/72. It uses your own VirusTotal API key and your key's limits, sends only hashes, never files, and is off until you turn it on in Settings. The key is stored encrypted.
 - **Starts with Windows, hidden in the tray.** The installed copy starts at sign-in without opening its window and without a UAC prompt. Turn it off in Settings.
 - **Updates itself** from this repository's releases: download, install and restart, with only a banner.
 - **Asks first** before blocking programs Windows or your VPN need (`svchost.exe`, `lsass.exe`, `tailscaled.exe`, `tailscale-ipn.exe`) or WattWall itself. `System` has no program file, so it cannot be blocked.
 
 ## Where the rules live
 
-Each block is two rules in Windows Defender Firewall, in a group named WattWall. You can see them in `wf.msc`. WattWall only ever changes rules it created, and those rules are the record of what is blocked: the app itself keeps only the list of programs it has seen and the start-with-Windows choice, in `%LOCALAPPDATA%\WattWall\settings.json`.
+Each block is two rules in Windows Defender Firewall, in a group named WattWall. You can see them in `wf.msc`. WattWall only ever changes rules it created, and those rules are the record of what is blocked. The app itself keeps the list of programs it has seen and the start-with-Windows choice in `settings.json` and, if you turn VirusTotal on, its answers in `virustotal.json` and your key, encrypted, in `secrets.bin`, all in `%LOCALAPPDATA%\WattWall`.
+
+## The tray menu
+
+Left-click the tray icon to open WattWall. Right-click it for the menu: whether blocks are on, the programs using the network right now (tick one to block it, untick to allow it), Turn all blocks off or on, Open and Quit.
 
 ## Install
 

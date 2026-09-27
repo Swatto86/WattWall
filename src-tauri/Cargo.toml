@@ -20,8 +20,13 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 dirs = "6"
+# reqwest, ring, rustls and zeroize are already built for the updater; these lines add no crates.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+ring = { version = "0.17", default-features = false }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-process = "2"
@@ -37,6 +42,7 @@ windows = { version = "0.61", features = [
     "Win32_Networking_WinSock",
     "Win32_Security",
     "Win32_Security_Authorization",
+    "Win32_Security_Credentials",
     "Win32_Security_Cryptography",
     "Win32_Security_Cryptography_Catalog",
     "Win32_Security_Cryptography_Sip",
@@ -51,6 +57,7 @@ windows = { version = "0.61", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+zeroize = "1"
 
 # Not `[lints] workspace = true`: Cargo cannot override a workspace forbid,
 # and this crate must call Win32 for connection-table buffers and for closing

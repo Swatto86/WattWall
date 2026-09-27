@@ -12,6 +12,10 @@ mod task;
 mod taskbar;
 mod traffic;
 mod tray;
+mod traymenu;
+mod vault;
+mod virustotal;
+mod vtnet;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,15 +24,18 @@ use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{Emitter, Manager, State, WindowEvent};
+use wattwall_core::virustotal::Limits;
 use wattwall_core::{exe_name, guard, Guard, Row};
 
 use engine::Engine;
 use programs::{icon_data_url, is_elevated, publisher};
+use virustotal::{VirusTotal, VtRowDto, VtSummaryDto};
 
 struct Watt {
     engine: Engine,
     icons: Mutex<HashMap<String, String>>,
     publishers: Mutex<HashMap<String, String>>,
+    virustotal: VirusTotal,
     hidden: bool,
 }
 
@@ -46,6 +53,8 @@ struct RowDto {
     needs_confirmation: bool,
     cannot_block: bool,
     warning: String,
+    /// None while the VirusTotal check is off.
+    virustotal: Option<VtRowDto>,
 }
 
 #[derive(Serialize, Clone)]
@@ -60,6 +69,7 @@ struct StateDto {
     autostart_available: bool,
     autostart_reason: String,
     elevated: bool,
+    virustotal: VtSummaryDto,
 }
 
 fn map_row(row: &Row, app: &Watt) -> RowDto {
@@ -95,6 +105,7 @@ fn map_row(row: &Row, app: &Watt) -> RowDto {
         needs_confirmation: row.needs_confirmation,
         cannot_block: row.cannot_block,
         warning,
+        virustotal: None,
     }
 }
 
@@ -126,9 +137,12 @@ fn snapshot(app: &Watt) -> Result<StateDto, String> {
         );
     }
     let autostart = app.engine.autostart();
+    let mut blocked: Vec<RowDto> = view.blocked.iter().map(|row| map_row(row, app)).collect();
+    let mut seen: Vec<RowDto> = view.seen.iter().map(|row| map_row(row, app)).collect();
+    let virustotal = attach_virustotal(app, &mut blocked, &mut seen);
     Ok(StateDto {
-        blocked: view.blocked.iter().map(|row| map_row(row, app)).collect(),
-        seen: view.seen.iter().map(|row| map_row(row, app)).collect(),
+        blocked,
+        seen,
         suspended: view.suspended,
         has_rules: view.has_rules,
         warnings,
@@ -136,7 +150,43 @@ fn snapshot(app: &Watt) -> Result<StateDto, String> {
         autostart_available: autostart.available,
         autostart_reason: autostart.reason,
         elevated,
+        virustotal,
     })
+}
+
+/// Give the VirusTotal check every listed program, connected ones first, then
+/// blocked ones, then the rest, and attach its answer to each row.
+fn attach_virustotal(app: &Watt, blocked: &mut [RowDto], seen: &mut [RowDto]) -> VtSummaryDto {
+    let mut slots: Vec<(bool, usize)> = Vec::new();
+    slots.extend(
+        (0..seen.len())
+            .filter(|&i| seen[i].connected)
+            .map(|i| (false, i)),
+    );
+    slots.extend((0..blocked.len()).map(|i| (true, i)));
+    slots.extend(
+        (0..seen.len())
+            .filter(|&i| !seen[i].connected)
+            .map(|i| (false, i)),
+    );
+    let path = |(in_blocked, i): (bool, usize)| {
+        if in_blocked {
+            blocked[i].path.clone()
+        } else {
+            seen[i].path.clone()
+        }
+    };
+    slots.retain(|&slot| !path(slot).eq_ignore_ascii_case("System"));
+    let wanted = slots.iter().map(|&slot| path(slot)).collect();
+    let (rows, summary) = app.virustotal.update(wanted);
+    for ((in_blocked, i), row) in slots.into_iter().zip(rows) {
+        if in_blocked {
+            blocked[i].virustotal = row;
+        } else {
+            seen[i].virustotal = row;
+        }
+    }
+    summary
 }
 
 #[tauri::command]
@@ -164,6 +214,34 @@ fn set_suspended(state: State<Watt>, suspended: bool) -> Result<StateDto, String
 #[tauri::command]
 fn set_autostart(state: State<Watt>, enabled: bool) -> Result<StateDto, String> {
     state.engine.set_autostart(enabled)?;
+    snapshot(&state)
+}
+
+/// Save a key (optional once one is saved) and the owner's limits, and turn
+/// the VirusTotal check on. The key is checked and sealed in Rust and never
+/// sent back to the window.
+#[tauri::command]
+fn configure_virustotal(
+    state: State<Watt>,
+    key: Option<String>,
+    per_minute: u32,
+    per_day: u32,
+) -> Result<StateDto, String> {
+    state
+        .virustotal
+        .configure(key, Limits::new(per_minute, per_day)?)?;
+    snapshot(&state)
+}
+
+#[tauri::command]
+fn set_virustotal(state: State<Watt>, enabled: bool) -> Result<StateDto, String> {
+    state.virustotal.set_enabled(enabled)?;
+    snapshot(&state)
+}
+
+#[tauri::command]
+fn remove_virustotal_key(state: State<Watt>) -> Result<StateDto, String> {
+    state.virustotal.remove_key()?;
     snapshot(&state)
 }
 
@@ -216,7 +294,9 @@ pub fn run() {
             std::process::exit(1)
         }
     };
+    let test_copy = engine.is_test_copy();
     let watt = Watt {
+        virustotal: VirusTotal::open(engine.data_dir(), test_copy),
         engine,
         icons: Mutex::new(HashMap::new()),
         publishers: Mutex::new(HashMap::new()),
@@ -235,7 +315,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .manage(watt)
         .manage(tray::Meter::default())
-        .setup(|app| {
+        .setup(move |app| {
             let handle = app.handle().clone();
             tray::build(&handle)?;
             publish(&handle);
@@ -255,9 +335,15 @@ pub fn run() {
                 })
                 .map_err(|err| std::io::Error::other(err.to_string()))?;
             let flag = stop.clone();
+            let lookups = handle.clone();
             std::thread::Builder::new()
                 .name("wattwall-traffic".into())
                 .spawn(move || tray::watch_traffic(handle, flag))
+                .map_err(|err| std::io::Error::other(err.to_string()))?;
+            let flag = stop.clone();
+            std::thread::Builder::new()
+                .name("wattwall-virustotal".into())
+                .spawn(move || virustotal::watch(lookups, flag, test_copy))
                 .map_err(|err| std::io::Error::other(err.to_string()))?;
             app.manage(stop);
             Ok(())
@@ -273,6 +359,9 @@ pub fn run() {
             set_blocked,
             set_suspended,
             set_autostart,
+            configure_virustotal,
+            set_virustotal,
+            remove_virustotal_key,
             started_hidden,
             quit_app
         ])

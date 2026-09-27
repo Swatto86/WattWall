@@ -6,7 +6,7 @@ members = ["crates/wattwall-core", "src-tauri"]
 edition = "2021"
 license = "MIT"
 rust-version = "1.96"
-version = "0.2.0"
+version = "0.3.0"
 
 [workspace.dependencies]
 wattwall-core = { path = "crates/wattwall-core" }

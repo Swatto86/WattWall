@@ -2,10 +2,12 @@
 // webview on an isolated profile, with a file-backed firewall so the suite
 // does not change this PC's Windows Firewall rules.
 //
-// Covers boot to the main window, the live traffic reading, blocking a
-// program, turning every block off and on, a hidden (logon-style) restart
-// that keeps the block, allowing it again, a command the window is not
-// allowed to call, and a clean exit.
+// Covers boot to the main window, the live traffic reading, VirusTotal setup
+// and results (test mode answers from a table, no network or Credential
+// Manager), blocking a program, turning every block off and on, a hidden
+// (logon-style) restart that keeps the block and the saved results,
+// allowing it again, a command the window is not allowed to call, and a
+// clean exit.
 import { remote } from "webdriverio";
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:net";
@@ -223,6 +225,65 @@ try {
   const notepadRule = () => JSON.parse(readFileSync(join(profile, "fake-rules.json"), "utf8"))
     .find((rule) => String(rule.path).toLowerCase().endsWith("notepad.exe"));
 
+  // VirusTotal, against the test mode's table: curl.exe is flagged,
+  // notepad.exe is clean, and the made-up marker file cannot be hashed.
+  const vtChip = (path) => browser.execute((want) => {
+    const chip = [...document.querySelectorAll("button.vt-chip")].find((el) =>
+      (el.dataset.path ?? "").toLowerCase() === want.toLowerCase());
+    return chip && !chip.hidden ? { text: chip.textContent, tone: chip.dataset.tone } : null;
+  }, path);
+  const chipIs = (path, text, tone) => browser.waitUntil(async () => {
+    const chip = await vtChip(path);
+    return chip?.text === text && chip.tone === tone;
+  }, { timeout: 15000, timeoutMsg: `${path} did not show ${text} (${tone})` });
+  const lookups = () => {
+    const log = join(profile, "fake-virustotal-calls.log");
+    return existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).length : 0;
+  };
+  const vtStatus = () => browser.execute(() => document.querySelector("#vt-status")?.textContent ?? "");
+  const goodKey = "1f".repeat(32);
+
+  assert.equal(await vtChip(notepad), null, "no VirusTotal chips while the check is off");
+  await browser.$("#settings").click();
+  await browser.$("#vt-enabled").click();
+  await browser.$("#vt-key").waitForDisplayed({ timeout: 5000, timeoutMsg: "turning VirusTotal on did not ask for a key" });
+  assert.equal(await browser.$("#vt-per-minute").getValue(), "4", "the free limits are offered first");
+  assert.equal(await browser.$("#vt-per-day").getValue(), "500");
+  await browser.$("#vt-key").setValue("not-a-key");
+  await browser.$("#vt-save").click();
+  await browser.waitUntil(async () => (await browser.$("#vt-error").getText()).includes("64"),
+    { timeout: 5000, timeoutMsg: "a malformed key was not refused" });
+  await browser.$("#vt-key").setValue("0".repeat(64));
+  await browser.$("#vt-per-minute").setValue("1000");
+  await browser.$("#vt-per-day").setValue("100000");
+  await browser.$("#vt-save").click();
+  await browser.waitUntil(() => hidden("vt-setup-overlay"), { timeout: 5000, timeoutMsg: "setup did not close" });
+  await browser.waitUntil(async () => (await vtStatus()).includes("rejected"),
+    { timeout: 15000, timeoutMsg: "a rejected key was not reported" });
+  await browser.$("#vt-change").click();
+  await browser.$("#vt-key").waitForDisplayed({ timeout: 5000 });
+  assert.equal(await browser.$("#vt-per-day").getValue(), "100000", "the saved limits come back");
+  await browser.$("#vt-key").setValue(goodKey);
+  await browser.$("#vt-save").click();
+  await browser.waitUntil(() => hidden("vt-setup-overlay"), { timeout: 5000, timeoutMsg: "setup did not close" });
+  await browser.$("#settings-close").click();
+  await chipIs(notepad, "VT 0/70", "ok");
+  await chipIs(curl, "VT 3/70", "bad");
+  await chipIs(marker, "VT n/a", "muted");
+  await browser.execute((want) => {
+    [...document.querySelectorAll("button.vt-chip")].find((el) => (el.dataset.path ?? "").toLowerCase() === want.toLowerCase())?.click();
+  }, curl);
+  await browser.waitUntil(async () => (await browser.$("#vt-details-summary").getText()).startsWith("3 of 70"),
+    { timeout: 5000, timeoutMsg: "the details dialog did not open" });
+  assert.equal(await browser.execute(() => document.querySelectorAll("#vt-details-names li").length), 4);
+  await browser.$("#vt-details-close").click();
+  const everything = await invoke("app_state");
+  assert.equal(JSON.stringify(everything.value).includes(goodKey), false, "the key must never reach the window");
+  const sealed = readFileSync(join(profile, "secrets.bin"));
+  assert.equal(sealed.includes(Buffer.from(goodKey)), false, "the key must be sealed, not written in the clear");
+  const calls = lookups();
+  assert.ok(calls >= 2, `expected lookups for curl and notepad, saw ${calls}`);
+
   await statusIs("Nothing blocked yet", "the header did not start empty");
   assert.equal(await clickPath(notepad), true, "notepad was not in the list");
   await browser.waitUntil(() => pressed(notepad), { timeout: 10000, timeoutMsg: "notepad did not move to Blocked" });
@@ -243,6 +304,15 @@ try {
   assert.equal(visible.ok, true, `could not ask whether the window is visible: ${visible.message}`);
   assert.equal(visible.value, false, "a --hidden start must leave the window closed");
   await browser.waitUntil(() => pressed(notepad), { timeout: 10000, timeoutMsg: "the block did not survive a restart" });
+  await chipIs(curl, "VT 3/70", "bad");
+  await chipIs(notepad, "VT 0/70", "ok");
+  await new Promise((r) => setTimeout(r, 1500));
+  assert.equal(lookups(), calls, "results after a restart come from the saved answers, not new lookups");
+  const removed = await invoke("remove_virustotal_key");
+  assert.equal(removed.ok, true, `removing the key failed: ${removed.message}`);
+  assert.equal(existsSync(join(profile, "secrets.bin")), false, "removing the key deletes the sealed file");
+  await browser.waitUntil(async () => (await vtChip(notepad)) === null,
+    { timeout: 10000, timeoutMsg: "chips stayed after the key was removed" });
   assert.equal(await clickPath(notepad), true, "notepad was not blocked after restart");
   await browser.waitUntil(async () => !(await pressed(notepad)), { timeout: 10000, timeoutMsg: "allow did not remove the block" });
   assert.equal(notepadRule(), undefined, "allow must remove the rule");
@@ -251,7 +321,7 @@ try {
 
   assert.equal(mentionsMarker(join(profile, "settings.json")), true, "the test app must keep its state in the isolated profile");
   assert.equal(mentionsMarker(realSettings), false, "the test app must never write the installed app's settings");
-  console.log("PASS: boot, search, traffic reading, block, turn off and on, hidden restart, allow, denied remote open, clean exit");
+  console.log("PASS: boot, search, traffic reading, VirusTotal setup and results, block, turn off and on, hidden restart, cached results, allow, denied remote open, clean exit");
 } catch (error) {
   if (browser) {
     try { console.error(await browser.execute(() => document.body.innerText.slice(-4000))); } catch { /* page already gone */ }

@@ -15,5 +15,6 @@ export const icon = {
   download: svg('<path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/>'),
   up: svg('<path d="M12 19V6M6.5 11.5L12 6l5.5 5.5"/>'),
   down: svg('<path d="M12 5v13M6.5 12.5L12 18l5.5-5.5"/>'),
+  shield: svg('<path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.3-7.5 9.5-4.3-1.2-7.5-4.9-7.5-9.5V6z"/><path d="M8.8 12.2l2.2 2.2 4.3-4.6"/>'),
   wall: svg('<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9.7h18M3 14.3h18M12 5v4.7M7.5 9.7v4.6M16.5 9.7v4.6M12 14.3V19"/>'),
 };
