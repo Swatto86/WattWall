@@ -30,6 +30,20 @@ The webview is elevated when the app is. It loads only the bundled page, the CSP
 
 Closing the window hides it. Quit is the tray item (and `quit_app`). The program is a window app, so opening it does not create a command prompt. A command such as `--cleanup`, launched from an existing prompt, prints into that prompt.
 
+The window follows the Windows light or dark setting. The lists are updated in place rather than rebuilt, so the three-second refresh keeps keyboard focus and does not reload program icons. While a dialog is open the rest of the window is inert, and focus returns where it was.
+
+The debug build's file-backed firewall needs no administrator, so the "not running as administrator" warning only appears against the real firewall (`Engine::needs_admin`).
+
+## Tray and taskbar meter
+
+At the owner's request the tray icon is dynamic, like ZoneAlarm's: a brick wall with a red bar for bytes sent and a green bar for bytes received, redrawn once a second, and a grey wall while blocks are off. The taskbar button shows the same drawing while the window is open. It is drawn in Rust (`wattwall-core` `meter.rs`) at the exact sizes Windows asks for (`SM_CXSMICON` for the tray and title bar, `SM_CXICON` for the taskbar), on a 16-pixel grid with every edge rounded to a whole pixel, so it stays sharp at every scaling. The bars are logarithmic from 1 KB/s to 10 MB/s so ordinary background traffic still shows.
+
+The counters are `GetIfTable2` octets from hardware adapters that are up, skipping the filter rows Windows lists beside each adapter (they repeat its counters) and virtual adapters such as a VPN (their traffic also crosses a hardware adapter). Rates are summed per adapter between two readings, so an adapter that appears or resets is not a burst.
+
+Only the traffic thread hands icons and the tooltip to Windows, and only when a bar height, the paused state or the text changes. Tray calls wait for the main thread, so the thread decides under a lock and calls Windows after releasing it. Tauri only sets a window's small icon, so `taskbar.rs` sends `WM_SETICON` for the big one on the main thread and frees the icon it replaces. A taskbar shortcut the user pinned may still show the installed icon; that was not tested.
+
+The app icon (installer, exe, Start menu) is the static orange tile from `src-tauri/icons/source`. Its 16-pixel layer is drawn separately with three courses of bricks, because four blur together at that size.
+
 ## Updates
 
 Same shape as WattMail: check the signed `latest.json` at launch and every four hours, download, install and relaunch with only a banner. The install is quiet. Because this process is already elevated, the per-machine installer inherits that and does not show a second UAC prompt. The uninstall hook sees a silent update and does not ask about rules and does not remove the logon task. A real uninstall asks about the rules and always removes the task.

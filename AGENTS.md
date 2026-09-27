@@ -8,6 +8,7 @@ Windows tray app that adds per-program block rules to the Windows Firewall. `ARC
 - Iteration: `pwsh scripts/fastcheck.ps1` (`-Package wattwall-core` checks that crate only).
 - Full gate: `pwsh scripts/verify.ps1` (frontend, fmt, clippy, tests, `tauri build --debug --no-bundle`, WebDriver). From PowerShell, `msedgedriver` must be on `PATH` (`C:\Users\Swatto\bin`).
 - Real firewall check (elevated): `scripts/live-accept.ps1`. Install check: `scripts/install-handoff.ps1`.
+- App icons: edit `src-tauri/icons/source/*.svg`, then `node scripts/icons.mjs`. The tray and taskbar icon is drawn at run time (`crates/wattwall-core/src/meter.rs`).
 - Release install is local and unsigned until a tag is published. Do not tag or publish a GitHub release unless asked.
 
 ## Constraints

@@ -1,13 +1,16 @@
 //! Decisions WattWall can explain without talking to Windows: which firewall
-//! rules are ours, which programs need a warning, and how the window's list
-//! is built from rules plus what has been seen on the network.
+//! rules are ours, which programs need a warning, how the window's list is
+//! built from rules plus what has been seen on the network, and how the tray
+//! icon draws the traffic meter.
 
 mod danger;
+mod meter;
 mod model;
 mod pathutil;
 mod rules;
 
 pub use danger::{guard, Guard};
+pub use meter::{meter_fill, rate_text, traffic_between, Counters, Glyph, TrayLook};
 pub use model::{
     build_view, new_rules_enabled, remember, Remembered, Row, RuleRecord, View, REMEMBERED_CAP,
 };

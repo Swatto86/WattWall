@@ -144,6 +144,12 @@ impl Engine {
         store::save(&self.data_dir, &settings)
     }
 
+    /// Only the real firewall needs an elevated process; the debug build's
+    /// file-backed stand-in does not.
+    pub fn needs_admin(&self) -> bool {
+        self.live
+    }
+
     pub fn autostart(&self) -> task::Autostart {
         if self.live {
             task::status()

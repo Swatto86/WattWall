@@ -1,15 +1,15 @@
 {
   "name": "wattwall",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "description": "WattWall — block chosen programs in the Windows Firewall",
+  "description": "WattWall: block chosen programs in the Windows Firewall",
   "author": "Swatto",
   "license": "MIT",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "test": "node --experimental-strip-types src/filter.selfcheck.ts",
+    "test": "node --experimental-strip-types src/filter.selfcheck.ts && node --experimental-strip-types src/model.selfcheck.ts",
     "test:e2e": "node scripts/e2e.mjs",
     "tauri": "tauri"
   },

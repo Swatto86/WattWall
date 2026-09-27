@@ -2,9 +2,10 @@
 // webview on an isolated profile, with a file-backed firewall so the suite
 // does not change this PC's Windows Firewall rules.
 //
-// Covers boot to the main window, blocking a program and seeing it after a
-// restart, allowing it again, a command the window is not allowed to call,
-// and a clean exit.
+// Covers boot to the main window, the live traffic reading, blocking a
+// program, turning every block off and on, a hidden (logon-style) restart
+// that keeps the block, allowing it again, a command the window is not
+// allowed to call, and a clean exit.
 import { remote } from "webdriverio";
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:net";
@@ -103,11 +104,11 @@ const invoke = (command, args = {}) => browser.executeAsync((commandName, comman
   );
 }, command, args);
 
-const connect = async () => {
+const connect = async (args = []) => {
   debugPort = await freePort();
   policyState = join(stateDir, "webview-policy.json");
   policy("Enable", debugPort);
-  app = spawn(executable, [], {
+  app = spawn(executable, args, {
     env: { ...appEnv, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort}` },
     stdio: "ignore",
   });
@@ -172,6 +173,10 @@ try {
   }, "WebDriver server did not start");
 
   await connect();
+  await browser.waitUntil(
+    async () => (await invoke("plugin:window|is_visible", { label: "main" })).value === true,
+    { timeout: 10000, timeoutMsg: "a normal start must show the window" },
+  );
   const hidden = (id) => browser.execute((elementId) => getComputedStyle(document.getElementById(elementId)).display === "none", id);
   assert.equal(await hidden("notice-overlay"), true, "the blank WattWall dialog must not cover the window");
   assert.equal(await hidden("settings-overlay"), true, "settings must start closed");
@@ -202,20 +207,46 @@ try {
   }, { timeout: 10000, timeoutMsg: "search did not narrow the list to notepad" });
   await browser.$("#search").setValue("");
 
+  // The traffic thread's first reading replaces the waiting mark in the header.
+  await browser.waitUntil(
+    () => browser.execute(() => /\/s$/.test(document.querySelector("#rate-send")?.textContent ?? "")),
+    { timeout: 10000, timeoutMsg: "no traffic reading reached the window" },
+  );
+
+  const status = () => browser.execute(() => document.querySelector("#status-text")?.textContent ?? "");
+  const statusIs = (want, message) =>
+    browser.waitUntil(async () => (await status()) === want, { timeout: 10000, timeoutMsg: `${message} (header: ${want})` });
+  const notepadRule = () => JSON.parse(readFileSync(join(profile, "fake-rules.json"), "utf8"))
+    .find((rule) => String(rule.path).toLowerCase().endsWith("notepad.exe"));
+
+  await statusIs("Nothing blocked yet", "the header did not start empty");
   assert.equal(await clickPath(notepad), true, "notepad was not in the list");
   await browser.waitUntil(() => pressed(notepad), { timeout: 10000, timeoutMsg: "notepad did not move to Blocked" });
-  const rules = JSON.parse(readFileSync(join(profile, "fake-rules.json"), "utf8"));
-  assert.ok(rules.some((rule) => String(rule.path).toLowerCase().endsWith("notepad.exe") && rule.outbound_enabled === true));
+  assert.equal(notepadRule()?.outbound_enabled, true, "blocking notepad must write an enabled rule");
+  await statusIs("Blocking 1 program", "the header did not report the block");
 
+  await browser.$("#suspend").click();
+  await statusIs("All blocks are off", "turning all blocks off did not show");
+  assert.equal(notepadRule()?.outbound_enabled, false, "turning all blocks off must disable the rule, not delete it");
+  await browser.$("#suspend").click();
+  await statusIs("Blocking 1 program", "turning blocks back on did not show");
+  assert.equal(notepadRule()?.outbound_enabled, true, "turning blocks back on must enable the rule");
+
+  // A logon start passes --hidden: the app runs in the tray and the window stays closed.
   await exitApp();
-  await connect();
+  await connect(["--hidden"]);
+  const visible = await invoke("plugin:window|is_visible", { label: "main" });
+  assert.equal(visible.ok, true, `could not ask whether the window is visible: ${visible.message}`);
+  assert.equal(visible.value, false, "a --hidden start must leave the window closed");
   await browser.waitUntil(() => pressed(notepad), { timeout: 10000, timeoutMsg: "the block did not survive a restart" });
   assert.equal(await clickPath(notepad), true, "notepad was not blocked after restart");
   await browser.waitUntil(async () => !(await pressed(notepad)), { timeout: 10000, timeoutMsg: "allow did not remove the block" });
+  assert.equal(notepadRule(), undefined, "allow must remove the rule");
+  await statusIs("Nothing blocked yet", "the header did not clear after allow");
   await exitApp();
 
   assert.equal(stamp(realSettings), realBefore, "the installed app's settings must be untouched");
-  console.log("PASS: boot, search, block, restart, allow, denied remote open, clean exit");
+  console.log("PASS: boot, search, traffic reading, block, turn off and on, hidden restart, allow, denied remote open, clean exit");
 } catch (error) {
   if (browser) {
     try { console.error(await browser.execute(() => document.body.innerText.slice(-4000))); } catch { /* page already gone */ }

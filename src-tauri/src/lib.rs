@@ -1,5 +1,6 @@
-//! WattWall window, tray and commands. The webview only sends a path or a
-//! yes/no; every check happens here before Windows is changed.
+//! WattWall window and commands. The webview only sends a path or a yes/no;
+//! every check happens here before Windows is changed. The tray lives in
+//! `tray.rs`.
 
 mod com;
 mod engine;
@@ -8,6 +9,9 @@ mod net;
 mod programs;
 mod store;
 mod task;
+mod taskbar;
+mod traffic;
+mod tray;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,8 +19,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, State, WindowEvent};
 use wattwall_core::{exe_name, guard, Guard, Row};
 
@@ -116,7 +118,7 @@ fn cached(
 fn snapshot(app: &Watt) -> Result<StateDto, String> {
     let view = app.engine.refresh()?;
     let mut warnings = app.engine.warnings()?;
-    let elevated = is_elevated();
+    let elevated = !app.engine.needs_admin() || is_elevated();
     if !elevated {
         warnings.insert(
             0,
@@ -183,154 +185,12 @@ fn show(app: &tauri::AppHandle) {
     }
 }
 
-fn rebuild_tray(app: &tauri::AppHandle, state: &StateDto) {
-    let Some(tray) = app.tray_by_id("main") else {
-        return;
-    };
-    let Ok(menu) = Menu::new(app) else { return };
-    let connected: Vec<&RowDto> = state
-        .blocked
-        .iter()
-        .chain(state.seen.iter())
-        .filter(|row| row.connected)
-        .collect();
-    if connected.is_empty() {
-        if let Ok(item) = MenuItem::with_id(
-            app,
-            "none",
-            "Nothing is using the network",
-            false,
-            None::<&str>,
-        ) {
-            let _ = menu.append(&item);
-        }
-    } else {
-        for (index, row) in connected.iter().enumerate() {
-            let id = format!("conn:{index}");
-            let label = if row.cannot_block {
-                format!("{} (cannot block)", row.name)
-            } else {
-                row.name.clone()
-            };
-            if let Ok(item) = CheckMenuItem::with_id(
-                app,
-                &id,
-                &label,
-                !row.cannot_block,
-                row.enforced,
-                None::<&str>,
-            ) {
-                let _ = menu.append(&item);
-            }
-        }
-    }
-    if let Ok(sep) = PredefinedMenuItem::separator(app) {
-        let _ = menu.append(&sep);
-    }
-    let toggle = if !state.has_rules {
-        ("suspend", "Turn all blocks off", false)
-    } else if state.suspended {
-        ("resume", "Turn all blocks on", true)
-    } else {
-        ("suspend", "Turn all blocks off", true)
-    };
-    if let Ok(item) = MenuItem::with_id(app, toggle.0, toggle.1, toggle.2, None::<&str>) {
-        let _ = menu.append(&item);
-    }
-    if let Ok(sep) = PredefinedMenuItem::separator(app) {
-        let _ = menu.append(&sep);
-    }
-    if let Ok(item) = MenuItem::with_id(app, "open", "Open", true, None::<&str>) {
-        let _ = menu.append(&item);
-    }
-    if let Ok(item) = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>) {
-        let _ = menu.append(&item);
-    }
-    let _ = tray.set_menu(Some(menu));
-    let tooltip = if state.suspended {
-        "WattWall — all blocks are off"
-    } else if state.has_rules {
-        "WattWall — blocks are on"
-    } else {
-        "WattWall"
-    };
-    let _ = tray.set_tooltip(Some(tooltip));
-}
-
-fn on_menu(app: &tauri::AppHandle, id: &str) {
-    let Some(state) = app.try_state::<Watt>() else {
-        return;
-    };
-    if id == "open" {
-        show(app);
-        return;
-    }
-    if id == "quit" {
-        app.exit(0);
-        return;
-    }
-    if id == "suspend" {
-        let _ = state.engine.set_suspended(true);
-        publish(app);
-        return;
-    }
-    if id == "resume" {
-        let _ = state.engine.set_suspended(false);
-        publish(app);
-        return;
-    }
-    let Some(index) = id
-        .strip_prefix("conn:")
-        .and_then(|text| text.parse::<usize>().ok())
-    else {
-        return;
-    };
-    let Ok(snapshot) = snapshot(&state) else {
-        return;
-    };
-    let connected: Vec<&RowDto> = snapshot
-        .blocked
-        .iter()
-        .chain(snapshot.seen.iter())
-        .filter(|row| row.connected)
-        .collect();
-    let Some(row) = connected.get(index) else {
-        return;
-    };
-    if row.cannot_block {
-        let _ = native_message(&row.warning, false);
-        return;
-    }
-    let next = !row.enforced;
-    if next && row.needs_confirmation && !native_message(&row.warning, true) {
-        return;
-    }
-    let _ = state.engine.set_blocked(&row.path, next, true);
-    publish(app);
-}
-
-fn native_message(text: &str, yes_no: bool) -> bool {
-    use windows::core::HSTRING;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        MessageBoxW, IDYES, MB_ICONWARNING, MB_OK, MB_YESNO,
-    };
-    let body = HSTRING::from(text);
-    let title = HSTRING::from("WattWall");
-    let flags = if yes_no {
-        MB_YESNO | MB_ICONWARNING
-    } else {
-        MB_OK | MB_ICONWARNING
-    };
-    let answer = unsafe { MessageBoxW(None, &body, &title, flags) };
-    !yes_no || answer == IDYES
-}
-
 fn publish(app: &tauri::AppHandle) {
     let Some(state) = app.try_state::<Watt>() else {
         return;
     };
     if let Ok(snapshot) = snapshot(&state) {
-        rebuild_tray(app, &snapshot);
+        tray::show_state(app, &snapshot);
         let _ = app.emit("state", snapshot);
     }
 }
@@ -374,27 +234,10 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(watt)
+        .manage(tray::Meter::default())
         .setup(|app| {
             let handle = app.handle().clone();
-            let _ = TrayIconBuilder::with_id("main")
-                .tooltip("WattWall")
-                .icon(
-                    app.default_window_icon()
-                        .cloned()
-                        .unwrap_or_else(|| tauri::image::Image::new(&[], 0, 0)),
-                )
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        show(tray.app_handle());
-                    }
-                })
-                .on_menu_event(|app, event| on_menu(app, event.id().as_ref()))
-                .build(app)?;
+            tray::build(&handle)?;
             publish(&handle);
             let stop = Arc::new(AtomicBool::new(false));
             let flag = stop.clone();
@@ -410,6 +253,11 @@ pub fn run() {
                         publish(&poll);
                     }
                 })
+                .map_err(|err| std::io::Error::other(err.to_string()))?;
+            let flag = stop.clone();
+            std::thread::Builder::new()
+                .name("wattwall-traffic".into())
+                .spawn(move || tray::watch_traffic(handle, flag))
                 .map_err(|err| std::io::Error::other(err.to_string()))?;
             app.manage(stop);
             Ok(())

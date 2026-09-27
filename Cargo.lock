@@ -4591,7 +4591,7 @@ dependencies = [
 
 [[package]]
 name = "wattwall-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "sha2",
  "thiserror 2.0.21",
@@ -4599,7 +4599,7 @@ dependencies = [
 
 [[package]]
 name = "wattwall-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dirs 6.0.0",
  "serde",
