@@ -9,7 +9,8 @@
 import { remote } from "webdriverio";
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import assert from "node:assert/strict";
@@ -36,15 +37,18 @@ if (!existsSync(executable)) skip(`no debug build at ${executable} (npx tauri bu
 if (!onPath("msedgedriver")) skip("msedgedriver is not on PATH");
 
 const realSettings = join(process.env.LOCALAPPDATA ?? "", "WattWall", "settings.json");
-const stamp = (path) => (existsSync(path) ? statSync(path).mtimeMs : null);
-const realBefore = stamp(realSettings);
 
 const stateDir = realpathSync.native(mkdtempSync(join(tmpdir(), "wattwall-e2e-")));
 const profile = join(stateDir, "profile");
 mkdirSync(profile, { recursive: true });
 const notepad = "C:\\Windows\\System32\\notepad.exe";
 const curl = "C:\\Windows\\System32\\curl.exe";
-writeFileSync(join(profile, "fake-connections.json"), JSON.stringify([notepad, curl]));
+// A program no real PC has. The test app remembers it like any connected
+// program, so it must turn up in the isolated profile and never in the
+// installed app's settings, even while an installed WattWall writes its own.
+const marker = `C:\\WattWall-e2e-${randomUUID()}\\probe.exe`;
+writeFileSync(join(profile, "fake-connections.json"), JSON.stringify([notepad, curl, marker]));
+const mentionsMarker = (path) => existsSync(path) && readFileSync(path, "utf8").toLowerCase().includes(marker.toLowerCase().replaceAll("\\", "\\\\"));
 
 const appEnv = {
   ...process.env,
@@ -245,7 +249,8 @@ try {
   await statusIs("Nothing blocked yet", "the header did not clear after allow");
   await exitApp();
 
-  assert.equal(stamp(realSettings), realBefore, "the installed app's settings must be untouched");
+  assert.equal(mentionsMarker(join(profile, "settings.json")), true, "the test app must keep its state in the isolated profile");
+  assert.equal(mentionsMarker(realSettings), false, "the test app must never write the installed app's settings");
   console.log("PASS: boot, search, traffic reading, block, turn off and on, hidden restart, allow, denied remote open, clean exit");
 } catch (error) {
   if (browser) {
