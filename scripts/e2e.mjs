@@ -172,6 +172,15 @@ try {
   }, "WebDriver server did not start");
 
   await connect();
+  const hidden = (id) => browser.execute((elementId) => getComputedStyle(document.getElementById(elementId)).display === "none", id);
+  assert.equal(await hidden("notice-overlay"), true, "the blank WattWall dialog must not cover the window");
+  assert.equal(await hidden("settings-overlay"), true, "settings must start closed");
+  assert.equal(await hidden("confirm-overlay"), true, "the block confirmation must start closed");
+  await browser.$("#settings").click();
+  await browser.$("#autostart").waitForDisplayed({ timeout: 5000 });
+  await browser.$("#settings-close").click();
+  await browser.waitUntil(() => hidden("settings-overlay"), { timeout: 5000, timeoutMsg: "settings did not close" });
+
   const fits = () => browser.execute(() => {
     const shell = document.querySelector(".app");
     if (!shell) return false;
