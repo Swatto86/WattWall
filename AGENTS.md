@@ -7,7 +7,7 @@ Windows tray app that adds per-program block rules to the Windows Firewall. `ARC
 - Dev: `npm run tauri dev`. The debug build does not elevate itself, so changing a real block from a dev run needs an administrator terminal. The window still lists programs.
 - Iteration: `pwsh scripts/fastcheck.ps1` (`-Package wattwall-core` checks that crate only).
 - Full gate: `pwsh scripts/verify.ps1` (frontend, fmt, clippy, tests, `tauri build --debug --no-bundle`, WebDriver). From PowerShell, `msedgedriver` must be on `PATH` (`C:\Users\Swatto\bin`).
-- Real firewall check (elevated): `scripts/live-accept.ps1`. Install check: `scripts/install-handoff.ps1`.
+- Real firewall check (elevated): `scripts/live-accept.ps1`. Install check: `scripts/install-handoff.ps1`. Both run `--cleanup`, which deletes the owner's real blocks, logon task and saved list: never run them on his PC without asking. To hand him a new build, run the new setup with `/S` over the installed copy from an elevated shell (a silent install only replaces files; the uninstall hook does nothing when silent), then check a reversible `--block`/`--allow` of `curl.exe`.
 - App icons: edit `src-tauri/icons/source/*.svg`, then `node scripts/icons.mjs`. The tray and taskbar icon is drawn at run time (`crates/wattwall-core/src/meter.rs`).
 - Release install is local and unsigned until a tag is published. Do not tag or publish a GitHub release unless asked.
 
