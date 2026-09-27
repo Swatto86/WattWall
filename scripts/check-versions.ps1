@@ -13,7 +13,8 @@ function Read-Version([string] $Path, [string] $Pattern) {
 $inherits = Select-String -LiteralPath 'src-tauri\Cargo.toml' -Pattern 'version\.workspace\s*=\s*true' | Select-Object -First 1
 if (-not $inherits) { throw 'src-tauri/Cargo.toml must use version.workspace so it cannot drift' }
 
-$workspace = Read-Version 'Cargo.toml' 'version = "([^"]+)"'
+# Anchored to the start of the line so rust-version cannot answer instead.
+$workspace = Read-Version 'Cargo.toml' '^version\s*=\s*"([^"]+)"'
 $tauri = Read-Version 'src-tauri\tauri.conf.json' '"version": "([^"]+)"'
 $npm = Read-Version 'package.json' '"version": "([^"]+)"'
 if ($workspace -ne $tauri -or $workspace -ne $npm) {
