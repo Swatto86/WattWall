@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: rustfmt, clippy
+
+      - uses: mozilla-actions/sccache-action@v0.0.10
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Frontend tests
+        run: npm test
+
+      - name: Version agreement
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/check-versions.ps1
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked --workspace
+
+      - name: Tauri debug build
+        run: npx tauri build --debug --no-bundle
+
+      - name: Install msedgedriver
+        shell: pwsh
+        run: |
+          $key = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $version = (Get-ItemProperty -LiteralPath $key -ErrorAction SilentlyContinue).pv
+          if (-not $version) { throw 'WebView2 Runtime version not found' }
+          Write-Host "WebView2 Runtime $version"
+          $dir = Join-Path $env:RUNNER_TEMP 'msedgedriver'
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          Invoke-WebRequest "https://msedgedriver.microsoft.com/$version/edgedriver_win64.zip" -OutFile (Join-Path $dir 'driver.zip')
+          Expand-Archive (Join-Path $dir 'driver.zip') -DestinationPath $dir -Force
+          $dir | Out-File $env:GITHUB_PATH -Append
+
+      - name: Desktop end-to-end journey
+        env:
+          WATTWALL_REQUIRE_E2E: "1"
+        run: npm run test:e2e

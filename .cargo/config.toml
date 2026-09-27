@@ -1,0 +1,3 @@
+[build]
+# jobs is omitted on purpose: Cargo rejects jobs = 0, and the default
+# already uses every logical CPU.

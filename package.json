@@ -1,0 +1,28 @@
+{
+  "name": "wattwall",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "WattWall — block chosen programs in the Windows Firewall",
+  "author": "Swatto",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "test": "node --experimental-strip-types src/filter.selfcheck.ts",
+    "test:e2e": "node scripts/e2e.mjs",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.1.1",
+    "@tauri-apps/plugin-dialog": "^2.2.0",
+    "@tauri-apps/plugin-process": "^2.2.0",
+    "@tauri-apps/plugin-updater": "^2.3.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3",
+    "webdriverio": "^9.32.0"
+  }
+}

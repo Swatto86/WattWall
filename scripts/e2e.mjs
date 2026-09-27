@@ -1,0 +1,223 @@
+// Desktop end-to-end journey. Drives the real debug binary through its real
+// webview on an isolated profile, with a file-backed firewall so the suite
+// does not change this PC's Windows Firewall rules.
+//
+// Covers boot to the main window, blocking a program and seeing it after a
+// restart, allowing it again, a command the window is not allowed to call,
+// and a clean exit.
+import { remote } from "webdriverio";
+import { execFileSync, spawn } from "node:child_process";
+import { createServer } from "node:net";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import assert from "node:assert/strict";
+
+const skip = (reason) => {
+  if (process.env.WATTWALL_REQUIRE_E2E === "1") {
+    console.error(`desktop end-to-end suite is required but cannot run: ${reason}`);
+    process.exit(1);
+  }
+  console.log(`SKIP desktop end-to-end suite: ${reason}`);
+  process.exit(0);
+};
+const onPath = (tool) => {
+  try {
+    execFileSync("where", [tool], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const executable = resolve(process.env.WATTWALL_TEST_BINARY || "target/debug/WattWall.exe");
+if (!existsSync(executable)) skip(`no debug build at ${executable} (npx tauri build --debug --no-bundle)`);
+if (!onPath("msedgedriver")) skip("msedgedriver is not on PATH");
+
+const realSettings = join(process.env.LOCALAPPDATA ?? "", "WattWall", "settings.json");
+const stamp = (path) => (existsSync(path) ? statSync(path).mtimeMs : null);
+const realBefore = stamp(realSettings);
+
+const stateDir = realpathSync.native(mkdtempSync(join(tmpdir(), "wattwall-e2e-")));
+const profile = join(stateDir, "profile");
+mkdirSync(profile, { recursive: true });
+const notepad = "C:\\Windows\\System32\\notepad.exe";
+const curl = "C:\\Windows\\System32\\curl.exe";
+writeFileSync(join(profile, "fake-connections.json"), JSON.stringify([notepad, curl]));
+
+const appEnv = {
+  ...process.env,
+  WATTWALL_DATA_DIR: profile,
+  WATTWALL_FAKE: "1",
+  WATTWALL_E2E: "1",
+  WEBVIEW2_USER_DATA_FOLDER: join(stateDir, "webview"),
+};
+
+const freePort = () => new Promise((resolvePort, reject) => {
+  const server = createServer();
+  server.on("error", reject);
+  server.listen(0, "127.0.0.1", () => {
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    server.close(() => resolvePort(port));
+  });
+});
+const waitFor = async (check, message, timeout = 30000) => {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error(message);
+};
+const reachable = async (url) => {
+  try {
+    return (await fetch(url)).ok;
+  } catch {
+    return false;
+  }
+};
+
+const driverPort = await freePort();
+const driver = spawn("msedgedriver", [`--port=${driverPort}`], { stdio: ["ignore", "pipe", "pipe"] });
+let driverLog = "";
+let driverError;
+driver.on("error", (error) => { driverError = error; });
+for (const stream of [driver.stdout, driver.stderr]) {
+  stream?.on("data", (data) => { driverLog = (driverLog + data).slice(-12000); });
+}
+
+let browser;
+let app;
+let debugPort;
+let policyState;
+const policy = (mode, port) => {
+  const args = ["-NoProfile", "-File", "scripts/webview-test-policy.ps1", "-Mode", mode, "-StateFile", policyState];
+  if (port) args.push("-Port", String(port));
+  execFileSync("pwsh", args, { stdio: "pipe" });
+};
+const invoke = (command, args = {}) => browser.executeAsync((commandName, commandArgs, done) => {
+  window.__TAURI_INTERNALS__.invoke(commandName, commandArgs).then(
+    (value) => done({ ok: true, value }),
+    (error) => done({ ok: false, message: String(error) }),
+  );
+}, command, args);
+
+const connect = async () => {
+  debugPort = await freePort();
+  policyState = join(stateDir, "webview-policy.json");
+  policy("Enable", debugPort);
+  app = spawn(executable, [], {
+    env: { ...appEnv, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort}` },
+    stdio: "ignore",
+  });
+  await waitFor(async () => {
+    if (app.exitCode !== null) throw new Error(`WattWall exited at launch with ${app.exitCode}`);
+    return reachable(`http://127.0.0.1:${debugPort}/json/version`);
+  }, "WattWall did not expose its webview", 60000);
+  browser = await remote({
+    hostname: "127.0.0.1",
+    port: driverPort,
+    logLevel: "silent",
+    connectionRetryCount: 0,
+    connectionRetryTimeout: 60000,
+    capabilities: {
+      browserName: "webview2",
+      "ms:edgeOptions": { debuggerAddress: `127.0.0.1:${debugPort}` },
+      "wdio:enforceWebDriverClassic": true,
+    },
+  });
+  await browser.waitUntil(
+    () => browser.execute(() => Boolean(document.querySelector("#search"))),
+    { timeout: 30000, timeoutMsg: "the main window never appeared" },
+  );
+};
+
+const endSession = async () => {
+  if (!browser) return;
+  try { await browser.deleteSession(); } catch { /* the app may already have closed it */ }
+  browser = undefined;
+};
+
+const exitApp = async () => {
+  await invoke("quit_app");
+  await waitFor(() => app.exitCode !== null, "WattWall did not exit", 20000);
+  assert.equal(app.exitCode, 0, "WattWall must exit cleanly");
+  app = undefined;
+  policy("Restore");
+  await endSession();
+  await waitFor(async () => !(await reachable(`http://127.0.0.1:${debugPort}/json/version`)),
+    "WebView2 kept running after WattWall exited", 20000);
+};
+
+const clickPath = (path) => browser.execute((want) => {
+  const button = [...document.querySelectorAll("button.toggle")].find((el) =>
+    (el.dataset.path ?? "").toLowerCase() === want.toLowerCase());
+  if (!button) return false;
+  button.click();
+  return true;
+}, path);
+
+const pressed = (path) => browser.execute((want) => {
+  const button = [...document.querySelectorAll("#blocked button.toggle")].find((el) =>
+    (el.dataset.path ?? "").toLowerCase() === want.toLowerCase());
+  return button?.getAttribute("aria-pressed") === "true";
+}, path);
+
+try {
+  await waitFor(async () => {
+    if (driverError) throw driverError;
+    if (driver.exitCode !== null) throw new Error(`WebDriver server exited: ${driverLog}`);
+    return reachable(`http://127.0.0.1:${driverPort}/status`);
+  }, "WebDriver server did not start");
+
+  await connect();
+  const denied = await invoke("plugin:opener|open_url", { url: "https://example.com/" });
+  assert.equal(denied.ok, false, "the window must not be allowed to open remote URLs");
+
+  await browser.$("#search").setValue("notepad");
+  await browser.waitUntil(async () => {
+    const count = await browser.execute(() => document.querySelectorAll("#seen button.toggle").length);
+    return count === 1;
+  }, { timeout: 10000, timeoutMsg: "search did not narrow the list to notepad" });
+  await browser.$("#search").setValue("");
+
+  assert.equal(await clickPath(notepad), true, "notepad was not in the list");
+  await browser.waitUntil(() => pressed(notepad), { timeout: 10000, timeoutMsg: "notepad did not move to Blocked" });
+  const rules = JSON.parse(readFileSync(join(profile, "fake-rules.json"), "utf8"));
+  assert.ok(rules.some((rule) => String(rule.path).toLowerCase().endsWith("notepad.exe") && rule.outbound_enabled === true));
+
+  await exitApp();
+  await connect();
+  await browser.waitUntil(() => pressed(notepad), { timeout: 10000, timeoutMsg: "the block did not survive a restart" });
+  assert.equal(await clickPath(notepad), true, "notepad was not blocked after restart");
+  await browser.waitUntil(async () => !(await pressed(notepad)), { timeout: 10000, timeoutMsg: "allow did not remove the block" });
+  await exitApp();
+
+  assert.equal(stamp(realSettings), realBefore, "the installed app's settings must be untouched");
+  console.log("PASS: boot, search, block, restart, allow, denied remote open, clean exit");
+} catch (error) {
+  if (browser) {
+    try { console.error(await browser.execute(() => document.body.innerText.slice(-4000))); } catch { /* page already gone */ }
+  }
+  console.error(driverLog);
+  throw error;
+} finally {
+  try {
+    await endSession();
+    if (driver.exitCode === null) driver.kill();
+    if (app?.pid && app.exitCode === null) {
+      execFileSync("taskkill", ["/PID", String(app.pid), "/T", "/F"], { stdio: "pipe" });
+    }
+  } finally {
+    if (policyState && existsSync(policyState)) policy("Restore");
+    for (let attempt = 0; attempt < 20; attempt++) {
+      try {
+        rmSync(stateDir, { recursive: true, force: true });
+        break;
+      } catch {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+  }
+}

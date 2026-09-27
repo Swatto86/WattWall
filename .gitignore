@@ -1,0 +1,11 @@
+/target
+/dist
+node_modules/
+/src-tauri/gen
+**/*.rs.bk
+/.idea
+/.vscode
+*.log
+tsconfig.tsbuildinfo
+Thumbs.db
+tsconfig.tsbuildinfo
