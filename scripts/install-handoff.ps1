@@ -16,6 +16,8 @@
      stays hidden.
   -WipeUserRulesAndData also tests --cleanup, which DELETES every WattWall rule, the logon task
   and the saved program list. Never use it on the owner's PC without asking him.
+  -TestBlockAll also turns Block All on and off with --block-all and --allow-all. Every program
+  on this PC loses the network for those seconds and open connections are closed, so ask first.
 #>
 [CmdletBinding()]
 param(
@@ -23,7 +25,8 @@ param(
     [string] $Setup,
     [string] $InstalledExe = (Join-Path $env:ProgramFiles 'WattWall\WattWall.exe'),
     [string] $Log,
-    [switch] $WipeUserRulesAndData
+    [switch] $WipeUserRulesAndData,
+    [switch] $TestBlockAll
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -159,6 +162,21 @@ try {
     Write-Log "rules-after=$rulesAfter online-after-allow=$online"
     if ($rulesAfter -ne $rulesBefore.Count) { throw "rule count is $rulesAfter, was $($rulesBefore.Count)" }
     if (-not $online) { throw 'curl.exe cannot reach the network after allow' }
+
+    if ($TestBlockAll) {
+        $code = Invoke-WattWall @('--block-all')
+        $blockAllRules = @(Get-WattWallRules | Where-Object { $_.Name -like 'WattWall Block All *' }).Count
+        $online = Test-Online
+        Write-Log "block-all-exit=$code block-all-rules=$blockAllRules online-during-block-all=$online"
+        $code2 = Invoke-WattWall @('--allow-all')
+        $left = @(Get-WattWallRules | Where-Object { $_.Name -like 'WattWall Block All *' }).Count
+        $back = Test-Online
+        Write-Log "allow-all-exit=$code2 block-all-rules-after=$left online-after-allow-all=$back"
+        if ($code -ne 0 -or $blockAllRules -ne 2) { throw 'Block All did not add its two rules' }
+        if ($online) { throw 'curl.exe still reached the network during Block All' }
+        if ($code2 -ne 0 -or $left -ne 0) { throw 'Allow all did not remove the Block All rules' }
+        if (-not $back) { throw 'curl.exe cannot reach the network after Allow all' }
+    }
 
     $rememberedAfter = Get-RememberedCount
     Write-Log "remembered-after=$rememberedAfter"

@@ -17,8 +17,8 @@ WattWall is a Windows tray program. It adds block rules for chosen executables t
 ## Component map
 
 - `crates/wattwall-core`: `virustotal.rs` reads reports, decides when a file is due again and paces lookups within the owner's limits. Also: which rules are ours, which programs need a warning, how the Blocked and Seen lists are built, which path autostart may point at. `meter.rs` draws the tray glyph as RGBA and turns byte counters into bar heights and rate text.
-- `src-tauri/src/firewall.rs`: create, enable, disable and delete only our rules. Debug builds can use a JSON stand-in when `WATTWALL_FAKE=1`.
-- `src-tauri/src/net.rs`: connection snapshot and closing TCP for one program.
+- `src-tauri/src/firewall.rs`: create, enable, disable and delete only our rules, including the two Block All rules. `fakewall.rs` is the debug builds' JSON stand-in (`WATTWALL_FAKE=1`).
+- `src-tauri/src/net.rs`: connection snapshot, and closing TCP for one program or, for Block All, every connection that leaves the PC.
 - `src-tauri/src/traffic.rs`: adapter byte counters for the meter.
 - `src-tauri/src/programs.rs`: pid to path, icon, publisher (only when the signature checks out), elevation, final path.
 - `src-tauri/src/task.rs`: create, read and delete the logon task.

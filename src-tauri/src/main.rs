@@ -29,6 +29,8 @@ fn maintenance_requested(args: &[String]) -> bool {
             || arg == "--blocks-on"
             || arg == "--block"
             || arg == "--allow"
+            || arg == "--block-all"
+            || arg == "--allow-all"
     })
 }
 
@@ -51,7 +53,18 @@ fn maintenance(args: &[String]) -> Option<i32> {
     let allow = value(args, "--allow");
     let off = args.iter().any(|arg| arg == "--blocks-off");
     let on = args.iter().any(|arg| arg == "--blocks-on");
-    if !(rules || remove_task || data || block.is_some() || allow.is_some() || off || on) {
+    let block_all = args.iter().any(|arg| arg == "--block-all");
+    let allow_all = args.iter().any(|arg| arg == "--allow-all");
+    if !(rules
+        || remove_task
+        || data
+        || block.is_some()
+        || allow.is_some()
+        || off
+        || on
+        || block_all
+        || allow_all)
+    {
         return None;
     }
     if !wattwall_desktop_lib::elevated_enough() {
@@ -76,6 +89,8 @@ fn maintenance(args: &[String]) -> Option<i32> {
         engine.set_blocked(&path, true, confirmed)
     } else if let Some(path) = allow {
         engine.set_blocked(&path, false, true)
+    } else if block_all || allow_all {
+        engine.set_block_all(block_all)
     } else if off {
         engine.set_suspended(true)
     } else {

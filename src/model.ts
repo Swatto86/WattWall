@@ -49,6 +49,8 @@ export interface AppState {
   autostartAvailable: boolean;
   autostartReason: string;
   elevated: boolean;
+  /** Block All: every program is cut off from the network. */
+  blockAll: boolean;
   virustotal: VtSummary;
 }
 
@@ -72,6 +74,9 @@ export interface Label {
 export function headline(state: AppState): Label {
   if (!state.elevated) {
     return { tone: "bad", text: "Not running as administrator", title: "WattWall can list programs but cannot change blocks." };
+  }
+  if (state.blockAll) {
+    return { tone: "bad", text: "All internet access blocked", title: "Block all is on: no program on this PC can use the network." };
   }
   if (state.suspended) {
     return { tone: "warn", text: "All blocks are off", title: "Every WattWall rule is turned off until you turn them back on." };
@@ -130,14 +135,14 @@ export function vtLabel(vt: VtRow | null): Label | null {
   if (!vt) return null;
   switch (vt.state) {
     case "pending":
-      return { tone: "muted", text: "VT …", title: "Waiting for its VirusTotal lookup." };
+      return { tone: "muted", text: "Waiting", title: "Waiting for its VirusTotal lookup." };
     case "unknown":
-      return { tone: "muted", text: "VT unknown", title: "VirusTotal has no record of this file." };
+      return { tone: "muted", text: "Unknown", title: "VirusTotal has no record of this file." };
     case "unreadable":
-      return { tone: "muted", text: "VT n/a", title: "WattWall could not read this file to hash it." };
+      return { tone: "muted", text: "n/a", title: "WattWall could not read this file to hash it." };
     case "found": {
       const tone: Tone = vt.malicious >= 3 ? "bad" : vt.malicious > 0 || vt.suspicious > 0 ? "warn" : "ok";
-      return { tone, text: `VT ${vt.malicious}/${vt.engines}`, title: vtVerdict(vt) };
+      return { tone, text: `${vt.malicious}/${vt.engines}`, title: vtVerdict(vt) };
     }
   }
 }

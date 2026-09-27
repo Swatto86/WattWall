@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
-use wattwall_core::virustotal::{api_key, is_due, Checked, Limits, Lookup, Pacer};
+use wattwall_core::virustotal::{api_key, is_due, Checked, Limits, Lookup, Pacer, Quotas};
 use zeroize::Zeroizing;
 
 use crate::vault::{Secrets, Vault};
@@ -52,7 +52,8 @@ struct StateFile {
 
 enum Problem {
     KeyRejected,
-    Limited,
+    /// VirusTotal's words, such as "Quota exceeded".
+    Limited(String),
     Unreachable(String),
 }
 
@@ -64,6 +65,8 @@ struct Inner {
     problem: Option<Problem>,
     /// Program paths to check, most important first.
     wanted: Vec<String>,
+    /// Block All is on: no lookups, since nothing can reach VirusTotal.
+    offline: bool,
     verified: HashMap<String, i64>,
     unreadable: HashMap<String, i64>,
     dirty: bool,
@@ -99,6 +102,15 @@ pub struct VtSummaryDto {
     tone: &'static str,
 }
 
+/// A key's limits as VirusTotal reports them, for the setup dialog.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaDto {
+    per_minute: u32,
+    per_day: u32,
+    quotas: Quotas,
+}
+
 enum Job {
     Hash(String),
     Lookup { path: String, sha256: String },
@@ -129,6 +141,7 @@ impl VirusTotal {
                 pacer,
                 problem: None,
                 wanted: Vec::new(),
+                offline: false,
                 verified: HashMap::new(),
                 unreadable: HashMap::new(),
                 dirty: false,
@@ -183,7 +196,7 @@ impl VirusTotal {
         if enabled
             && matches!(
                 inner.problem,
-                Some(Problem::Limited | Problem::Unreachable(_))
+                Some(Problem::Limited(_) | Problem::Unreachable(_))
             )
         {
             inner.problem = None;
@@ -205,10 +218,15 @@ impl VirusTotal {
 
     /// Take the programs to check, most important first, and return what the
     /// window shows for each of them and for the whole check.
-    pub fn update(&self, wanted: Vec<String>) -> (Vec<Option<VtRowDto>>, VtSummaryDto) {
+    pub fn update(
+        &self,
+        wanted: Vec<String>,
+        offline: bool,
+    ) -> (Vec<Option<VtRowDto>>, VtSummaryDto) {
         let now = now();
         let mut inner = self.lock();
         inner.wanted = wanted;
+        inner.offline = offline;
         let enabled = inner.saved.enabled && inner.has_key;
         let rows: Vec<Option<VtRowDto>> = inner
             .wanted
@@ -292,9 +310,9 @@ impl VirusTotal {
                 inner.problem = None;
             }
             Err(LookupError::KeyRejected) => inner.problem = Some(Problem::KeyRejected),
-            Err(LookupError::Limited) => {
+            Err(LookupError::Limited(reason)) => {
                 inner.pacer.limited(now);
-                inner.problem = Some(Problem::Limited);
+                inner.problem = Some(Problem::Limited(reason));
             }
             Err(LookupError::Other(message)) => {
                 inner.pacer.pause(now, RETRY_UNREACHABLE);
@@ -303,6 +321,36 @@ impl VirusTotal {
         }
         let _ = self.save(&mut inner, now);
         true
+    }
+
+    /// What VirusTotal says the typed key (or the saved one) allows. The
+    /// network part runs on the async runtime so the window stays responsive.
+    pub async fn quotas(&self, typed: Option<String>) -> Result<QuotaDto, String> {
+        let key =
+            match typed.filter(|text| !text.trim().is_empty()) {
+                Some(text) => Zeroizing::new(api_key(&text).ok_or(
+                    "That is not a VirusTotal API key: it should be 64 letters and digits.",
+                )?),
+                None => self.key()?,
+            };
+        let answer = if self.test_copy {
+            vtnet::fake_quotas(&key)
+        } else {
+            vtnet::quotas(&key).await
+        };
+        let quotas = answer.map_err(|err| match err {
+            LookupError::KeyRejected => "VirusTotal rejected the API key.".to_string(),
+            LookupError::Limited(reason) => format!("VirusTotal refused: {reason}"),
+            LookupError::Other(message) => format!("Could not ask VirusTotal: {message}"),
+        })?;
+        let limits = quotas
+            .limits()
+            .ok_or("VirusTotal did not say how many lookups a day the key allows.")?;
+        Ok(QuotaDto {
+            per_minute: limits.per_minute,
+            per_day: limits.per_day,
+            quotas,
+        })
     }
 
     /// The API key, read from the vault on first use.
@@ -349,7 +397,7 @@ fn next_job(inner: &mut Inner, now: i64) -> Option<Job> {
     {
         return None;
     }
-    let may_look_up = inner.pacer.wait(now) == 0;
+    let may_look_up = !inner.offline && inner.pacer.wait(now) == 0;
     for path in &inner.wanted {
         let key = path.to_ascii_lowercase();
         if inner
@@ -416,13 +464,14 @@ fn summary(inner: &Inner, checked: usize, total: usize, now: i64) -> VtSummaryDt
         (String::new(), "muted")
     } else {
         match &inner.problem {
+            _ if inner.offline => ("Lookups wait while Block all is on.".to_string(), "warn"),
             Some(Problem::KeyRejected) => (
                 "VirusTotal rejected the API key. Change it with Change settings.".to_string(),
                 "bad",
             ),
-            Some(Problem::Limited) => (
+            Some(Problem::Limited(reason)) => (
                 format!(
-                    "VirusTotal says the key's quota is used up. Trying again {}.",
+                    "VirusTotal refused a lookup: {reason}. Trying again {}. Read limits from VirusTotal (Change key or limits) shows what the key allows.",
                     when(inner.pacer.wait(now))
                 ),
                 "warn",

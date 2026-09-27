@@ -2,10 +2,11 @@
 //! changed. A file-backed stand-in is used only by the debug end-to-end suite.
 
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::PathBuf;
 
-use wattwall_core::{is_our_rule, rule_names, RuleRecord, GROUP, MARKER};
+use wattwall_core::{
+    is_our_rule, rule_names, RuleRecord, BLOCK_ALL_IN, BLOCK_ALL_OUT, GROUP, MARKER,
+};
 use windows::core::{Interface, BSTR};
 use windows::Win32::Foundation::{VARIANT_BOOL, VARIANT_FALSE, VARIANT_TRUE};
 use windows::Win32::NetworkManagement::WindowsFirewall::{
@@ -19,13 +20,7 @@ use windows::Win32::System::Ole::IEnumVARIANT;
 use windows::Win32::System::Variant::{VariantClear, VARIANT, VT_DISPATCH, VT_UNKNOWN};
 
 use crate::com::win_err;
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct FakeRule {
-    path: String,
-    outbound_enabled: Option<bool>,
-    inbound_enabled: Option<bool>,
-}
+use crate::fakewall;
 
 pub enum Firewall {
     Live,
@@ -36,46 +31,51 @@ impl Firewall {
     pub fn list(&self) -> Result<Vec<RuleRecord>, String> {
         match self {
             Self::Live => live_list(),
-            Self::Fake(path) => fake_list(path),
+            Self::Fake(path) => fakewall::list(path),
         }
     }
 
     pub fn set_blocked(&self, path: &str, enabled: bool) -> Result<(), String> {
         match self {
             Self::Live => live_set(path, enabled),
-            Self::Fake(file) => fake_set(file, path, enabled),
+            Self::Fake(file) => fakewall::set(file, path, enabled),
         }
     }
 
     pub fn remove(&self, path: &str) -> Result<(), String> {
         match self {
             Self::Live => live_remove_path(path),
-            Self::Fake(file) => fake_remove(file, path),
+            Self::Fake(file) => fakewall::remove(file, path),
         }
     }
 
     pub fn set_all_enabled(&self, enabled: bool) -> Result<(), String> {
         match self {
             Self::Live => live_set_all(enabled),
-            Self::Fake(file) => {
-                let mut rules = read_fake(file)?;
-                for rule in &mut rules {
-                    if rule.outbound_enabled.is_some() {
-                        rule.outbound_enabled = Some(enabled);
-                    }
-                    if rule.inbound_enabled.is_some() {
-                        rule.inbound_enabled = Some(enabled);
-                    }
-                }
-                write_fake(file, &rules)
-            }
+            Self::Fake(file) => fakewall::set_all(file, enabled),
         }
     }
 
     pub fn remove_all(&self) -> Result<(), String> {
         match self {
             Self::Live => live_remove_all(),
-            Self::Fake(file) => write_fake(file, &[]),
+            Self::Fake(file) => fakewall::remove_all(file),
+        }
+    }
+
+    /// Whether Block All is on: either of its two rules exists.
+    pub fn block_all(&self) -> Result<bool, String> {
+        match self {
+            Self::Live => live_block_all(),
+            Self::Fake(file) => fakewall::block_all(file),
+        }
+    }
+
+    /// Add both Block All rules, or remove both.
+    pub fn set_block_all(&self, on: bool) -> Result<(), String> {
+        match self {
+            Self::Live => live_set_block_all(on),
+            Self::Fake(file) => fakewall::set_block_all(file, on),
         }
     }
 
@@ -119,8 +119,33 @@ fn live_set(path: &str, enabled: bool) -> Result<(), String> {
     let policy = policy()?;
     let rules = unsafe { policy.Rules() }.map_err(win_err)?;
     unsafe {
-        upsert(&rules, &out_name, path, NET_FW_RULE_DIR_OUT, enabled)?;
-        upsert(&rules, &in_name, path, NET_FW_RULE_DIR_IN, enabled)?;
+        upsert(&rules, &out_name, Some(path), NET_FW_RULE_DIR_OUT, enabled)?;
+        upsert(&rules, &in_name, Some(path), NET_FW_RULE_DIR_IN, enabled)?;
+    }
+    Ok(())
+}
+
+fn live_block_all() -> Result<bool, String> {
+    let policy = policy()?;
+    let rules = unsafe { policy.Rules() }.map_err(win_err)?;
+    let present = |name: &str| match unsafe { rules.Item(&BSTR::from(name)) } {
+        Ok(rule) => unsafe { ours(&rule) }.unwrap_or(false),
+        Err(_) => false,
+    };
+    Ok(present(BLOCK_ALL_OUT) || present(BLOCK_ALL_IN))
+}
+
+fn live_set_block_all(on: bool) -> Result<(), String> {
+    let policy = policy()?;
+    let rules = unsafe { policy.Rules() }.map_err(win_err)?;
+    if on {
+        unsafe {
+            upsert(&rules, BLOCK_ALL_OUT, None, NET_FW_RULE_DIR_OUT, true)?;
+            upsert(&rules, BLOCK_ALL_IN, None, NET_FW_RULE_DIR_IN, true)?;
+        }
+    } else {
+        remove_named(&rules, BLOCK_ALL_OUT)?;
+        remove_named(&rules, BLOCK_ALL_IN)?;
     }
     Ok(())
 }
@@ -176,6 +201,8 @@ fn live_remove_all() -> Result<(), String> {
     for name in names {
         remove_named(&rules, &name)?;
     }
+    remove_named(&rules, BLOCK_ALL_OUT)?;
+    remove_named(&rules, BLOCK_ALL_IN)?;
     Ok(())
 }
 
@@ -191,10 +218,11 @@ fn remove_named(rules: &INetFwRules, name: &str) -> Result<(), String> {
     }
 }
 
+/// Create or update one of our block rules. `path` None means every program.
 unsafe fn upsert(
     rules: &INetFwRules,
     name: &str,
-    path: &str,
+    path: Option<&str>,
     direction: NET_FW_RULE_DIRECTION,
     enabled: bool,
 ) -> Result<(), String> {
@@ -205,7 +233,9 @@ unsafe fn upsert(
             ));
         }
         unsafe { existing.SetEnabled(bool_variant(enabled)) }.map_err(win_err)?;
-        unsafe { existing.SetApplicationName(&BSTR::from(path)) }.map_err(win_err)?;
+        if let Some(path) = path {
+            unsafe { existing.SetApplicationName(&BSTR::from(path)) }.map_err(win_err)?;
+        }
         return Ok(());
     }
     let rule: INetFwRule =
@@ -213,8 +243,10 @@ unsafe fn upsert(
     unsafe {
         rule.SetName(&BSTR::from(name)).map_err(win_err)?;
         rule.SetDescription(&BSTR::from(MARKER)).map_err(win_err)?;
-        rule.SetApplicationName(&BSTR::from(path))
-            .map_err(win_err)?;
+        if let Some(path) = path {
+            rule.SetApplicationName(&BSTR::from(path))
+                .map_err(win_err)?;
+        }
         rule.SetGrouping(&BSTR::from(GROUP)).map_err(win_err)?;
         rule.SetDirection(direction).map_err(win_err)?;
         rule.SetAction(NET_FW_ACTION_BLOCK).map_err(win_err)?;
@@ -340,59 +372,4 @@ fn bool_variant(enabled: bool) -> VARIANT_BOOL {
 
 fn bstr(value: BSTR) -> Result<String, String> {
     Ok(String::from_utf16_lossy(&value))
-}
-
-fn fake_list(path: &std::path::Path) -> Result<Vec<RuleRecord>, String> {
-    Ok(read_fake(path)?
-        .into_iter()
-        .map(|rule| RuleRecord {
-            path: rule.path,
-            outbound_enabled: rule.outbound_enabled,
-            inbound_enabled: rule.inbound_enabled,
-        })
-        .collect())
-}
-
-fn fake_set(file: &std::path::Path, path: &str, enabled: bool) -> Result<(), String> {
-    let mut rules = read_fake(file)?;
-    if let Some(rule) = rules
-        .iter_mut()
-        .find(|rule| rule.path.eq_ignore_ascii_case(path))
-    {
-        rule.path = path.to_string();
-        rule.outbound_enabled = Some(enabled);
-        rule.inbound_enabled = Some(enabled);
-    } else {
-        rules.push(FakeRule {
-            path: path.to_string(),
-            outbound_enabled: Some(enabled),
-            inbound_enabled: Some(enabled),
-        });
-    }
-    write_fake(file, &rules)
-}
-
-fn fake_remove(file: &std::path::Path, path: &str) -> Result<(), String> {
-    let mut rules = read_fake(file)?;
-    rules.retain(|rule| !rule.path.eq_ignore_ascii_case(path));
-    write_fake(file, &rules)
-}
-
-fn read_fake(path: &std::path::Path) -> Result<Vec<FakeRule>, String> {
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let text = fs::read_to_string(path).map_err(|err| err.to_string())?;
-    serde_json::from_str(&text).map_err(|err| err.to_string())
-}
-
-fn write_fake(path: &std::path::Path, rules: &[FakeRule]) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-    }
-    let text = serde_json::to_string_pretty(rules).map_err(|err| err.to_string())?;
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, text).map_err(|err| err.to_string())?;
-    fs::rename(&tmp, path).map_err(|err| err.to_string())?;
-    Ok(())
 }

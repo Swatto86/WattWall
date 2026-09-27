@@ -10,7 +10,9 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use wattwall_core::virustotal::{is_sha256, parse_report, Lookup, Report};
+use wattwall_core::virustotal::{
+    error_reason, is_sha256, parse_quotas, parse_report, Lookup, Quotas, Report,
+};
 
 /// A program file's SHA-256 and the size and date it was taken at.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,7 +25,8 @@ pub struct Hashed {
 
 pub enum LookupError {
     KeyRejected,
-    Limited,
+    /// The quota is used up, in VirusTotal's words.
+    Limited(String),
     Other(String),
 }
 
@@ -103,9 +106,70 @@ pub fn lookup(sha256: &str, key: &str) -> Result<Lookup, LookupError> {
             .map_err(LookupError::Other),
         404 => Ok(Lookup::Unknown),
         401 | 403 => Err(LookupError::KeyRejected),
-        429 => Err(LookupError::Limited),
-        other => Err(LookupError::Other(format!("VirusTotal answered {other}"))),
+        429 => Err(LookupError::Limited(
+            error_reason(&body).unwrap_or_else(|| "Quota exceeded".into()),
+        )),
+        other => Err(LookupError::Other(match error_reason(&body) {
+            Some(reason) => format!("VirusTotal answered {other}: {reason}"),
+            None => format!("VirusTotal answered {other}"),
+        })),
     }
+}
+
+/// The key's request quotas. VirusTotal documents that these requests do not
+/// count against the quota. The key is the account id here, so it appears in
+/// the path as well as the header.
+pub async fn quotas(key: &str) -> Result<Quotas, LookupError> {
+    let client = client().map_err(LookupError::Other)?;
+    let mut last = LookupError::Other("VirusTotal did not answer".into());
+    for path in ["overall_quotas", ""] {
+        let url = if path.is_empty() {
+            format!("https://www.virustotal.com/api/v3/users/{key}")
+        } else {
+            format!("https://www.virustotal.com/api/v3/users/{key}/{path}")
+        };
+        let response = client
+            .get(&url)
+            .header("x-apikey", key)
+            .send()
+            .await
+            .map_err(|err| LookupError::Other(short_error(&err)))?;
+        let status = response.status().as_u16();
+        let body = response
+            .text()
+            .await
+            .map_err(|err| LookupError::Other(short_error(&err)))?;
+        match status {
+            200 => match parse_quotas(&body) {
+                Ok(quotas) => return Ok(quotas),
+                Err(err) => last = LookupError::Other(err),
+            },
+            401 | 403 => return Err(LookupError::KeyRejected),
+            429 => {
+                return Err(LookupError::Limited(
+                    error_reason(&body).unwrap_or_default(),
+                ))
+            }
+            other => {
+                last = LookupError::Other(match error_reason(&body) {
+                    Some(reason) => format!("VirusTotal answered {other}: {reason}"),
+                    None => format!("VirusTotal answered {other}"),
+                })
+            }
+        }
+    }
+    Err(last)
+}
+
+/// Test mode's quotas: the free Public API, 12 used today.
+pub fn fake_quotas(key: &str) -> Result<Quotas, LookupError> {
+    if key.bytes().all(|byte| byte == b'0') {
+        return Err(LookupError::KeyRejected);
+    }
+    parse_quotas(
+        r#"{"data":{"api_requests_hourly":{"user":{"allowed":240,"used":2}},"api_requests_daily":{"user":{"allowed":500,"used":12}}}}"#,
+    )
+    .map_err(LookupError::Other)
 }
 
 fn short_error(err: &reqwest::Error) -> String {
@@ -170,6 +234,13 @@ mod tests {
     fn live_virustotal_rejects_a_made_up_key() {
         let eicar = "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f";
         let answer = lookup(eicar, &"0".repeat(64));
+        assert!(matches!(answer, Err(LookupError::KeyRejected)));
+    }
+
+    #[test]
+    #[ignore = "talks to virustotal.com"]
+    fn live_virustotal_quota_request_rejects_a_made_up_key() {
+        let answer = tauri::async_runtime::block_on(quotas(&"0".repeat(64)));
         assert!(matches!(answer, Err(LookupError::KeyRejected)));
     }
 

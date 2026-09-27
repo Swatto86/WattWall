@@ -13,6 +13,12 @@ export interface VtContext {
   say(message: string): void;
 }
 
+interface VtQuota {
+  perMinute: number;
+  perDay: number;
+  quotas: { daily: { allowed: number; used: number } | null };
+}
+
 export interface VtView {
   overlays: HTMLElement[];
   paint(state: AppState): void;
@@ -29,6 +35,7 @@ export function setUpVirusTotal(ctx: VtContext): VtView {
   const perMinute = $<HTMLInputElement>("#vt-per-minute");
   const perDay = $<HTMLInputElement>("#vt-per-day");
   const error = $<HTMLParagraphElement>("#vt-error");
+  const quotaNote = $<HTMLSpanElement>("#vt-quota-note");
   let link = "";
 
   function openSetup(): void {
@@ -38,8 +45,24 @@ export function setUpVirusTotal(ctx: VtContext): VtView {
     perMinute.value = String(summary?.perMinute ?? 4);
     perDay.value = String(summary?.perDay ?? 500);
     error.textContent = "";
+    quotaNote.textContent = "";
     ctx.openDialog(setupOverlay, key);
   }
+
+  $("#vt-read-limits").addEventListener("click", async () => {
+    quotaNote.textContent = "Asking VirusTotal…";
+    try {
+      const answer = await invoke<VtQuota>("virustotal_quota", { key: key.value.trim() || null });
+      perMinute.value = String(answer.perMinute);
+      perDay.value = String(answer.perDay);
+      const daily = answer.quotas.daily;
+      quotaNote.textContent = daily
+        ? `VirusTotal says this key allows ${daily.allowed} a day (${daily.used} used today).`
+        : "Filled in from VirusTotal.";
+    } catch (err) {
+      quotaNote.textContent = String(err);
+    }
+  });
 
   enabled.addEventListener("change", async () => {
     const summary = ctx.state()?.virustotal;

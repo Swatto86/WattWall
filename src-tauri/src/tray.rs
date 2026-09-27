@@ -35,6 +35,7 @@ pub struct Meter {
 #[derive(Default)]
 struct Shown {
     paused: bool,
+    locked: bool,
     status: &'static str,
     sending: f64,
     receiving: f64,
@@ -51,6 +52,7 @@ impl Shown {
     fn look(&self, glyph: &Glyph) -> TrayLook {
         TrayLook {
             paused: self.paused,
+            locked: self.locked,
             sending: meter_fill(self.sending, glyph.steps()),
             receiving: meter_fill(self.receiving, glyph.steps()),
         }
@@ -103,7 +105,9 @@ pub fn build(app: &AppHandle) -> tauri::Result<TrayIcon> {
 
 /// Record the menu, wall colour and tooltip wording for this state.
 pub fn show_state(app: &AppHandle, state: &StateDto) {
-    let status = if state.suspended {
+    let status = if state.block_all {
+        "WattWall: all internet access is blocked"
+    } else if state.suspended {
         "WattWall: all blocks are off"
     } else if state.has_rules {
         "WattWall: blocks are on"
@@ -116,10 +120,12 @@ pub fn show_state(app: &AppHandle, state: &StateDto) {
         state.suspended,
         state.has_rules,
         state.elevated,
+        state.block_all,
     );
     if let Some(meter) = app.try_state::<Meter>() {
         if let Ok(mut shown) = meter.inner.lock() {
             shown.paused = state.suspended;
+            shown.locked = state.block_all;
             shown.status = status;
             shown.menu_wanted = Some(plan);
         }

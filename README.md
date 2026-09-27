@@ -8,6 +8,7 @@ WattWall blocks the programs you choose, using the Windows Firewall that is alre
 
 - **Shows who is on the network.** Every program with a connection or an open port appears with its icon, verified publisher and when it was last seen. Programs you have blocked are listed at the top.
 - **Blocks in one click.** Block adds two firewall rules for that program's file, outbound and inbound, and closes the connections it already has. Allow removes them. Block a program lets you pick any `.exe`.
+- **Block all internet access.** One switch cuts every program off the network, like ZoneAlarm's internet lock, and closes the connections they have open. Allow internet (or `WattWall.exe --allow-all` from an administrator prompt) turns it off.
 - **Turn all blocks off, and on again.** Handy for checking whether a block is what stopped something working. The rules are switched off, not deleted.
 - **Live tray and taskbar icon.** A small brick wall with a red bar for data sent and a green bar for data received, redrawn every second, like ZoneAlarm's tray meter. The wall turns grey while blocks are off. The taskbar button shows the same icon while the window is open, and the window header shows the last minute as a graph.
 - **Checks programs with VirusTotal, if you want.** Like Process Explorer, WattWall can look up each program's SHA-256 hash and show how many security engines flag it, for example VT 0/72. It uses your own VirusTotal API key and your key's limits, sends only hashes, never files, and is off until you turn it on in Settings. The key is stored encrypted.
@@ -35,7 +36,7 @@ Requirements: Windows 10 or 11, 64-bit, and the [Microsoft Edge WebView2 Runtime
 
 ## Remove everything
 
-`WattWall.exe --cleanup` removes WattWall's firewall rules, the logon task and WattWall's saved list. Running it again does nothing and is not an error. Uninstalling asks whether to remove the rules and always removes the logon task.
+`WattWall.exe --allow-all` turns Block All off. `WattWall.exe --cleanup` removes WattWall's firewall rules, the logon task and WattWall's saved list. Running it again does nothing and is not an error. Uninstalling asks whether to remove the rules and always removes the logon task.
 
 ## Build from source
 

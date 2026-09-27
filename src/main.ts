@@ -28,7 +28,7 @@ const autostart = $<HTMLInputElement>("#autostart");
 const settingsMsg = $<HTMLParagraphElement>("#settings-msg");
 
 let state: AppState | null = null;
-let pending: string | null = null;
+let pendingAction: (() => Promise<void>) | null = null;
 let pendingUpdate: Update | null = null;
 let working = 0;
 const busyPaths = new Set<string>();
@@ -59,12 +59,20 @@ function paint(): void {
   const seen = visible(state.seen);
 
   applyLabel(statusEl, $("#status-text"), headline(state));
+  $(".list").dataset.vt = state.virustotal.enabled ? "on" : "off";
   warningsEl.replaceChildren();
+  if (state.blockAll) {
+    warningsEl.append(banner("bad", "Block all is on: no program on this PC can use the network. Choose Allow internet to turn it off."));
+  }
   if (state.suspended) {
     warningsEl.append(banner("warn", "All WattWall blocks are off. Turn them back on when you have finished checking."));
   }
   for (const warning of state.warnings) warningsEl.append(banner("bad", warning));
 
+  const blockAllBtn = $<HTMLButtonElement>("#block-all");
+  blockAllBtn.dataset.on = String(state.blockAll);
+  $("#block-all-text").textContent = state.blockAll ? "Allow internet" : "Block all";
+  blockAllBtn.title = state.blockAll ? "Let programs use the network again" : "Cut every program off the network";
   suspendBtn.dataset.suspended = String(state.suspended);
   $("#suspend-text").textContent = state.suspended ? "Turn all blocks on" : "Turn all blocks off";
   suspendBtn.disabled = !state.hasRules;
@@ -113,9 +121,7 @@ async function apply(path: string, blocked: boolean, confirmed: boolean): Promis
   } catch (error) {
     const message = String(error);
     if (message.startsWith("confirm:")) {
-      pending = path;
-      $("#confirm-text").textContent = message.slice("confirm:".length);
-      openDialog(confirmOverlay, $("#confirm-no"));
+      askConfirm("Block this program?", message.slice("confirm:".length), "Block it", () => apply(path, true, true));
     } else {
       notice(message.startsWith("impossible:") ? message.slice("impossible:".length) : message);
     }
@@ -148,13 +154,34 @@ function openDialog(overlay: HTMLElement, focus: HTMLElement): void {
 function closeDialog(overlay: HTMLElement): void {
   const index = opened.findIndex((entry) => entry.overlay === overlay);
   overlay.classList.add("hidden");
-  if (overlay === confirmOverlay) pending = null;
+  if (overlay === confirmOverlay) pendingAction = null;
   if (index < 0) return;
   const [entry] = opened.splice(index, 1);
   const top = opened[opened.length - 1];
   if (top) top.overlay.inert = false;
   else shell.inert = false;
   entry.back?.focus();
+}
+
+/** The confirm dialog: `run` goes ahead only if the owner says yes. */
+function askConfirm(title: string, text: string, yes: string, run: () => Promise<void>): void {
+  $("#confirm-title").textContent = title;
+  $("#confirm-text").textContent = text;
+  $("#confirm-yes").textContent = yes;
+  pendingAction = run;
+  openDialog(confirmOverlay, $("#confirm-no"));
+}
+
+async function setBlockAll(on: boolean): Promise<void> {
+  working += 1;
+  try {
+    state = await invoke<AppState>("set_block_all", { on });
+    paint();
+  } catch (error) {
+    notice(String(error));
+  } finally {
+    working -= 1;
+  }
 }
 
 function notice(text: string): void {
@@ -212,9 +239,23 @@ autostart.addEventListener("change", async () => {
 
 $("#confirm-no").addEventListener("click", () => closeDialog(confirmOverlay));
 $("#confirm-yes").addEventListener("click", async () => {
-  const path = pending;
+  const run = pendingAction;
   closeDialog(confirmOverlay);
-  if (path) await apply(path, true, true);
+  if (run) await run();
+});
+
+$("#block-all").addEventListener("click", () => {
+  if (!state) return;
+  if (state.blockAll) {
+    void setBlockAll(false);
+    return;
+  }
+  askConfirm(
+    "Block all internet access?",
+    "Every program on this PC loses its network connection, including remote access such as Tailscale or Remote Desktop, until you choose Allow internet here or in the tray menu. Connections already open are closed now.",
+    "Block all",
+    () => setBlockAll(true),
+  );
 });
 $("#notice-ok").addEventListener("click", () => closeDialog(noticeOverlay));
 

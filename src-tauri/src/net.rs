@@ -49,6 +49,18 @@ impl Connections {
             Self::Fake(_) => Ok(0),
         }
     }
+
+    /// Close every TCP connection that leaves this PC, for Block All.
+    /// Loopback connections stay: they never reach the network.
+    pub fn close_all_tcp(&self) -> Result<u32, String> {
+        match self {
+            Self::Live => {
+                let off_pc = |_: u32, loopback: bool| !loopback;
+                Ok(close_v4(&off_pc)? + close_v6(&off_pc)?)
+            }
+            Self::Fake(_) => Ok(0),
+        }
+    }
 }
 
 fn live_snapshot() -> Result<Vec<String>, String> {
@@ -145,13 +157,17 @@ fn table(family: u32, tcp: bool) -> Result<Vec<u8>, String> {
 
 fn live_close(path: &str) -> Result<u32, String> {
     let want = path.to_ascii_lowercase();
-    let mut closed = 0u32;
-    closed += close_v4(&want)?;
-    closed += close_v6(&want)?;
-    Ok(closed)
+    let owned_by = |pid: u32, _: bool| {
+        path_for_pid(pid).is_some_and(|owner| owner.to_ascii_lowercase() == want)
+    };
+    Ok(close_v4(&owned_by)? + close_v6(&owned_by)?)
 }
 
-fn close_v4(want: &str) -> Result<u32, String> {
+/// Which connections to close, given the owning process and whether the
+/// other end is this PC.
+type Pick<'a> = &'a dyn Fn(u32, bool) -> bool;
+
+fn close_v4(pick: Pick) -> Result<u32, String> {
     let rows = table(AF_INET.0 as u32, true)?;
     let size = std::mem::size_of::<MIB_TCPROW_OWNER_PID>();
     if rows.len() < 4 {
@@ -173,10 +189,9 @@ fn close_v4(want: &str) -> Result<u32, String> {
         if row.dwState == MIB_TCP_STATE_LISTEN.0 as u32 || row.dwOwningPid == 0 {
             continue;
         }
-        let Some(owner) = path_for_pid(row.dwOwningPid) else {
-            continue;
-        };
-        if owner.to_ascii_lowercase() != want {
+        // The address is in network order, so its first byte is the lowest.
+        let loopback = row.dwRemoteAddr & 0xFF == 127;
+        if !pick(row.dwOwningPid, loopback) {
             continue;
         }
         let delete = MIB_TCPROW_LH {
@@ -196,7 +211,7 @@ fn close_v4(want: &str) -> Result<u32, String> {
     Ok(closed)
 }
 
-fn close_v6(want: &str) -> Result<u32, String> {
+fn close_v6(pick: Pick) -> Result<u32, String> {
     let rows = table(AF_INET6.0 as u32, true)?;
     let size = std::mem::size_of::<MIB_TCP6ROW_OWNER_PID>();
     if rows.len() < 4 {
@@ -218,10 +233,7 @@ fn close_v6(want: &str) -> Result<u32, String> {
         if row.dwState == MIB_TCP_STATE_LISTEN.0 as u32 || row.dwOwningPid == 0 {
             continue;
         }
-        let Some(owner) = path_for_pid(row.dwOwningPid) else {
-            continue;
-        };
-        if owner.to_ascii_lowercase() != want {
+        if !pick(row.dwOwningPid, is_loopback_v6(&row.ucRemoteAddr)) {
             continue;
         }
         if nsi_kill_v6(&row) {
@@ -229,6 +241,17 @@ fn close_v6(want: &str) -> Result<u32, String> {
         }
     }
     Ok(closed)
+}
+
+/// `::1`, or an IPv4 loopback address written the IPv6 way (`::ffff:127.x.x.x`).
+fn is_loopback_v6(address: &[u8; 16]) -> bool {
+    let mut one = [0u8; 16];
+    one[15] = 1;
+    let mapped = address[..10].iter().all(|byte| *byte == 0)
+        && address[10] == 0xFF
+        && address[11] == 0xFF
+        && address[12] == 127;
+    *address == one || mapped
 }
 
 /// Layout taken from the same call SetTcpEntry makes, extended to IPv6.
@@ -291,4 +314,28 @@ fn nsi_kill_v6(row: &MIB_TCP6ROW_OWNER_PID) -> bool {
         )
     };
     code == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_loopback_v6;
+
+    #[test]
+    fn loopback_addresses_in_ipv6_form() {
+        let mut one = [0u8; 16];
+        one[15] = 1;
+        assert!(is_loopback_v6(&one));
+        let mut mapped = [0u8; 16];
+        mapped[10] = 0xFF;
+        mapped[11] = 0xFF;
+        mapped[12] = 127;
+        mapped[15] = 1;
+        assert!(is_loopback_v6(&mapped));
+        mapped[12] = 192;
+        assert!(!is_loopback_v6(&mapped), "::ffff:192.x.x.x is not loopback");
+        let mut public = [0u8; 16];
+        public[0] = 0x20;
+        public[1] = 0x01;
+        assert!(!is_loopback_v6(&public));
+    }
 }

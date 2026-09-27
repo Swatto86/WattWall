@@ -36,17 +36,18 @@ export const SHELL = `
         <input id="search" type="search" placeholder="Search programs" aria-label="Search programs" autocomplete="off" spellcheck="false" />
         <kbd>Ctrl F</kbd>
       </label>
+      <button id="block-all" class="btn block-all" type="button" data-on="false" title="Cut every program off the network">${icon.ban}<span id="block-all-text">Block all</span></button>
       <button id="suspend" class="btn" type="button" data-suspended="false">${icon.pause}${icon.play}<span id="suspend-text">Turn all blocks off</span></button>
       <button id="block-program" class="btn primary" type="button">${icon.plus}<span>Block a program…</span></button>
     </div>
     <main class="list">
       <section aria-labelledby="blocked-title">
         <h2 id="blocked-title">Blocked <span id="blocked-count" class="count">0</span></h2>
-        <div id="blocked" class="rows"></div>
+        <div class="rows"><div class="thead" aria-hidden="true"><span></span><span>Program</span><span class="th-vt">VirusTotal</span><span>Status</span><span></span></div><div id="blocked" class="tbody"></div></div>
       </section>
       <section aria-labelledby="seen-title">
         <h2 id="seen-title">Seen using the network <span id="seen-count" class="count">0</span></h2>
-        <div id="seen" class="rows"></div>
+        <div class="rows"><div class="thead" aria-hidden="true"><span></span><span>Program</span><span class="th-vt">VirusTotal</span><span>Status</span><span></span></div><div id="seen" class="tbody"></div></div>
       </section>
     </main>
   </div>
@@ -110,7 +111,11 @@ export const SHELL = `
         <label class="field"><span>Lookups per minute</span><input id="vt-per-minute" type="number" min="1" step="1" inputmode="numeric" /></label>
         <label class="field"><span>Lookups per day</span><input id="vt-per-day" type="number" min="1" step="1" inputmode="numeric" /></label>
       </div>
-      <p class="hint">Your key's limits are on the API key page of your VirusTotal account. The free Public API allows 4 a minute and 500 a day. WattWall also waits by itself when VirusTotal says the quota is used up.</p>
+      <div class="quota-row">
+        <button id="vt-read-limits" class="btn small" type="button">Read limits from VirusTotal</button>
+        <span id="vt-quota-note" class="hint" role="status"></span>
+      </div>
+      <p class="hint">VirusTotal reports each key's real limits (asking does not use any lookups). The free Public API documents 4 a minute and 500 a day. WattWall also waits by itself when VirusTotal says the quota is used up.</p>
       <p id="vt-error" class="form-error" role="alert"></p>
       <div class="actions">
         <button id="vt-cancel" class="btn" type="button">Cancel</button>
@@ -236,13 +241,16 @@ export class RowList {
     const vt = document.createElement("button");
     vt.className = "vt-chip";
     vt.type = "button";
-    const chips = document.createElement("div");
-    chips.className = "chips";
-    chips.append(vt, chip);
+    const vtCell = document.createElement("div");
+    vtCell.className = "cell-vt";
+    vtCell.append(vt);
+    const statusCell = document.createElement("div");
+    statusCell.className = "cell-status";
+    statusCell.append(chip);
     const button = document.createElement("button");
     button.className = "toggle";
     button.type = "button";
-    root.append(picture, info, chips, button);
+    root.append(picture, info, vtCell, statusCell, button);
     const part: RowParts = { root, picture, name, publisher, path, chip, chipText, vt, button, row: {} as Row, iconSource: "\u0000" };
     button.addEventListener("click", () => this.onToggle(part.row));
     vt.addEventListener("click", () => this.onDetails(part.row));

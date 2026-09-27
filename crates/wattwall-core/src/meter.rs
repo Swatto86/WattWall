@@ -1,7 +1,7 @@
 //! The tray icon is drawn at run time: a small brick wall with two meter bars
 //! beside it, red for bytes sent and green for bytes received, the way
 //! ZoneAlarm's tray icon showed traffic. The wall turns grey while every
-//! WattWall block is off.
+//! WattWall block is off, and red while Block All cuts every program off.
 //!
 //! The drawing is laid out on a 16 by 16 grid. Every edge is rounded to a
 //! whole pixel at the size Windows asks for, so it stays sharp at 16, 20, 24
@@ -14,6 +14,8 @@ use std::collections::HashMap;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TrayLook {
     pub paused: bool,
+    /// Block All is on.
+    pub locked: bool,
     pub sending: u32,
     pub receiving: u32,
 }
@@ -36,6 +38,7 @@ const BAR_BOTTOM: u32 = 14;
 const WALL_FROM: [u8; 3] = [0xFF, 0xA2, 0x3D];
 const WALL_TO: [u8; 3] = [0xF0, 0x45, 0x2F];
 const WALL_PAUSED: [u8; 3] = [0x9A, 0xA3, 0xAE];
+const WALL_LOCKED: [u8; 3] = [0xE5, 0x38, 0x3B];
 const SEND: [u8; 3] = [0xFF, 0x3B, 0x4E];
 const RECEIVE: [u8; 3] = [0x2F, 0xD2, 0x7A];
 /// The empty part of a bar: grey at 35%, visible on light and dark taskbars.
@@ -79,7 +82,9 @@ impl Glyph {
         for [x0, y0, x1, y1] in BRICKS {
             let area = [self.at(x0), self.at(y0), self.at(x1), self.at(y1)];
             self.fill(&mut rgba, area, |x, y| {
-                let colour = if look.paused {
+                let colour = if look.locked {
+                    WALL_LOCKED
+                } else if look.paused {
                     WALL_PAUSED
                 } else {
                     mix(WALL_FROM, WALL_TO, (x + y) as f32 / span)
@@ -223,6 +228,16 @@ mod tests {
             ..TrayLook::default()
         });
         assert_eq!(pixel(&off, 16, 1, 4), [0x9A, 0xA3, 0xAE, 0xFF]);
+        let locked = glyph.draw(TrayLook {
+            locked: true,
+            paused: true,
+            ..TrayLook::default()
+        });
+        assert_eq!(
+            pixel(&locked, 16, 1, 4),
+            [0xE5, 0x38, 0x3B, 0xFF],
+            "Block All wins over paused"
+        );
     }
 
     #[test]
@@ -244,6 +259,7 @@ mod tests {
         let steps = glyph.steps();
         let image = glyph.draw(TrayLook {
             paused: false,
+            locked: false,
             sending: steps,
             receiving: 1,
         });
@@ -264,6 +280,7 @@ mod tests {
         );
         let over = glyph.draw(TrayLook {
             paused: false,
+            locked: false,
             sending: steps + 50,
             receiving: 0,
         });

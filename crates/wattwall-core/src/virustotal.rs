@@ -164,6 +164,90 @@ impl Default for Limits {
     }
 }
 
+/// One of a key's quotas: how many requests it allows and has used.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Quota {
+    pub allowed: u64,
+    pub used: u64,
+}
+
+/// A key's quotas as VirusTotal reports them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Quotas {
+    pub hourly: Option<Quota>,
+    pub daily: Option<Quota>,
+    pub monthly: Option<Quota>,
+}
+
+impl Quotas {
+    /// Limits that stay inside these quotas: the daily allowance, and a
+    /// sixtieth of the hourly one a minute (4 for the free Public API's 240).
+    pub fn limits(&self) -> Option<Limits> {
+        let daily = self.daily?;
+        let per_minute = self.hourly.map_or(Limits::FREE.per_minute, |hourly| {
+            (hourly.allowed / 60).max(1) as u32
+        });
+        Limits::new(
+            per_minute.min(10_000),
+            u32::try_from(daily.allowed)
+                .unwrap_or(u32::MAX)
+                .clamp(1, 10_000_000),
+        )
+        .ok()
+    }
+}
+
+/// The quotas in a `/users/{id}/overall_quotas` or `/users/{id}` answer. Both
+/// shapes are accepted: `{"api_requests_daily": {"user": {"allowed": ..}}}` and
+/// `{"attributes": {"quotas": {"api_requests_daily": {"allowed": ..}}}}`.
+pub fn parse_quotas(body: &str) -> Result<Quotas, String> {
+    let root: Value = serde_json::from_str(body)
+        .map_err(|err| format!("VirusTotal sent unreadable JSON: {err}"))?;
+    let data = root.get("data").ok_or("VirusTotal's answer has no data.")?;
+    let table = data.pointer("/attributes/quotas").unwrap_or(data);
+    let quota = |name: &str| {
+        let entry = table.get(name)?;
+        let entry = entry.get("user").unwrap_or(entry);
+        Some(Quota {
+            allowed: entry.get("allowed")?.as_u64()?,
+            used: entry.get("used").and_then(Value::as_u64).unwrap_or(0),
+        })
+    };
+    let quotas = Quotas {
+        hourly: quota("api_requests_hourly"),
+        daily: quota("api_requests_daily"),
+        monthly: quota("api_requests_monthly"),
+    };
+    if quotas.daily.is_none() && quotas.hourly.is_none() {
+        return Err("VirusTotal's answer has no request quotas.".into());
+    }
+    Ok(quotas)
+}
+
+/// VirusTotal's own words from an error answer: `{"error": {"code", "message"}}`.
+pub fn error_reason(body: &str) -> Option<String> {
+    let root: Value = serde_json::from_str(body).ok()?;
+    let error = root.get("error")?;
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    let code = error
+        .get("code")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    let text = match (message.is_empty(), code.is_empty()) {
+        (false, _) => message,
+        (true, false) => code,
+        (true, true) => return None,
+    };
+    Some(text.chars().take(160).collect())
+}
+
 /// Spaces lookups within the owner's limits and backs off when VirusTotal
 /// says the quota is used up. Times are Unix seconds.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -387,6 +471,57 @@ mod tests {
             300,
             "a normal answer resets the run of limits"
         );
+    }
+
+    #[test]
+    fn quotas_in_both_shapes_and_the_limits_they_allow() {
+        let overall = r#"{"data":{"api_requests_hourly":{"user":{"allowed":240,"used":3}},
+            "api_requests_daily":{"user":{"allowed":500,"used":12}},
+            "api_requests_monthly":{"user":{"allowed":15500,"used":40}}}}"#;
+        let quotas = parse_quotas(overall).expect("overall quotas");
+        assert_eq!(
+            quotas.daily,
+            Some(Quota {
+                allowed: 500,
+                used: 12
+            })
+        );
+        assert_eq!(quotas.limits(), Some(Limits::FREE));
+        let user =
+            r#"{"data":{"attributes":{"quotas":{"api_requests_daily":{"allowed":1,"used":1}}}}}"#;
+        let quotas = parse_quotas(user).expect("user object");
+        assert_eq!(
+            quotas.daily,
+            Some(Quota {
+                allowed: 1,
+                used: 1
+            })
+        );
+        assert_eq!(quotas.hourly, None);
+        assert_eq!(
+            quotas.limits(),
+            Some(Limits {
+                per_minute: 4,
+                per_day: 1
+            }),
+            "no hourly quota keeps the free per-minute rate"
+        );
+        assert!(parse_quotas(r#"{"data":{}}"#).is_err());
+        assert!(parse_quotas("nope").is_err());
+    }
+
+    #[test]
+    fn error_reasons_come_from_virustotal() {
+        assert_eq!(
+            error_reason(r#"{"error":{"code":"QuotaExceededError","message":"Quota exceeded"}}"#)
+                .as_deref(),
+            Some("Quota exceeded")
+        );
+        assert_eq!(
+            error_reason(r#"{"error":{"code":"WrongCredentialsError"}}"#).as_deref(),
+            Some("WrongCredentialsError")
+        );
+        assert_eq!(error_reason("<html>"), None);
     }
 
     #[test]

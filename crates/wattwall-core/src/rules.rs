@@ -6,6 +6,10 @@ use sha2::{Digest, Sha256};
 
 pub const GROUP: &str = "WattWall";
 pub const MARKER: &str = "WattWall v1";
+/// Block All: one outbound and one inbound rule with no program, so they
+/// apply to every program. Block rules win over allow rules in Windows.
+pub const BLOCK_ALL_OUT: &str = "WattWall Block All Out";
+pub const BLOCK_ALL_IN: &str = "WattWall Block All In";
 
 /// Outbound name, then inbound name. The hash is of the lower-cased path so
 /// `Curl.exe` and `curl.exe` are the same program on Windows.
@@ -20,7 +24,10 @@ pub fn rule_names(path: &str) -> (String, String) {
 pub fn is_our_rule(grouping: &str, description: &str, name: &str) -> bool {
     grouping == GROUP
         && description == MARKER
-        && (name.starts_with("WattWall Out ") || name.starts_with("WattWall In "))
+        && (name.starts_with("WattWall Out ")
+            || name.starts_with("WattWall In ")
+            || name == BLOCK_ALL_OUT
+            || name == BLOCK_ALL_IN)
 }
 
 fn hash16(path: &str) -> String {
@@ -61,5 +68,14 @@ mod tests {
         assert!(!is_our_rule("WattWall", "I made this", &out));
         assert!(!is_our_rule("Other", MARKER, &out));
         assert!(!is_our_rule(GROUP, MARKER, "Block curl"));
+    }
+
+    #[test]
+    fn block_all_rules_are_ours_only_by_their_exact_names() {
+        assert!(is_our_rule(GROUP, MARKER, BLOCK_ALL_OUT));
+        assert!(is_our_rule(GROUP, MARKER, BLOCK_ALL_IN));
+        assert!(!is_our_rule(GROUP, "I made this", BLOCK_ALL_OUT));
+        assert!(!is_our_rule(GROUP, MARKER, "WattWall Block All"));
+        assert!(!is_our_rule(GROUP, MARKER, "WattWall Block All Out 2"));
     }
 }

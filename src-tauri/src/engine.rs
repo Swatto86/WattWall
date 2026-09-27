@@ -119,6 +119,21 @@ impl Engine {
         Ok(())
     }
 
+    pub fn block_all(&self) -> Result<bool, String> {
+        self.firewall.block_all()
+    }
+
+    /// Turn Block All on or off. Turning it on also closes every TCP
+    /// connection that leaves the PC, since Windows keeps connections it has
+    /// already allowed.
+    pub fn set_block_all(&self, on: bool) -> Result<(), String> {
+        self.firewall.set_block_all(on)?;
+        if on {
+            self.connections.close_all_tcp()?;
+        }
+        Ok(())
+    }
+
     pub fn set_suspended(&self, suspended: bool) -> Result<(), String> {
         self.firewall.set_all_enabled(!suspended)?;
         if !suspended {

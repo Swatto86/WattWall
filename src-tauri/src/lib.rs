@@ -4,6 +4,7 @@
 
 mod com;
 mod engine;
+mod fakewall;
 mod firewall;
 mod net;
 mod programs;
@@ -69,6 +70,8 @@ struct StateDto {
     autostart_available: bool,
     autostart_reason: String,
     elevated: bool,
+    /// Block All: every program is cut off from the network.
+    block_all: bool,
     virustotal: VtSummaryDto,
 }
 
@@ -137,9 +140,10 @@ fn snapshot(app: &Watt) -> Result<StateDto, String> {
         );
     }
     let autostart = app.engine.autostart();
+    let block_all = app.engine.block_all()?;
     let mut blocked: Vec<RowDto> = view.blocked.iter().map(|row| map_row(row, app)).collect();
     let mut seen: Vec<RowDto> = view.seen.iter().map(|row| map_row(row, app)).collect();
-    let virustotal = attach_virustotal(app, &mut blocked, &mut seen);
+    let virustotal = attach_virustotal(app, &mut blocked, &mut seen, block_all);
     Ok(StateDto {
         blocked,
         seen,
@@ -150,13 +154,19 @@ fn snapshot(app: &Watt) -> Result<StateDto, String> {
         autostart_available: autostart.available,
         autostart_reason: autostart.reason,
         elevated,
+        block_all,
         virustotal,
     })
 }
 
 /// Give the VirusTotal check every listed program, connected ones first, then
 /// blocked ones, then the rest, and attach its answer to each row.
-fn attach_virustotal(app: &Watt, blocked: &mut [RowDto], seen: &mut [RowDto]) -> VtSummaryDto {
+fn attach_virustotal(
+    app: &Watt,
+    blocked: &mut [RowDto],
+    seen: &mut [RowDto],
+    offline: bool,
+) -> VtSummaryDto {
     let mut slots: Vec<(bool, usize)> = Vec::new();
     slots.extend(
         (0..seen.len())
@@ -178,7 +188,7 @@ fn attach_virustotal(app: &Watt, blocked: &mut [RowDto], seen: &mut [RowDto]) ->
     };
     slots.retain(|&slot| !path(slot).eq_ignore_ascii_case("System"));
     let wanted = slots.iter().map(|&slot| path(slot)).collect();
-    let (rows, summary) = app.virustotal.update(wanted);
+    let (rows, summary) = app.virustotal.update(wanted, offline);
     for ((in_blocked, i), row) in slots.into_iter().zip(rows) {
         if in_blocked {
             blocked[i].virustotal = row;
@@ -211,6 +221,13 @@ fn set_suspended(state: State<Watt>, suspended: bool) -> Result<StateDto, String
     snapshot(&state)
 }
 
+/// Block All on or off. The window asks first; this does not.
+#[tauri::command]
+fn set_block_all(state: State<Watt>, on: bool) -> Result<StateDto, String> {
+    state.engine.set_block_all(on)?;
+    snapshot(&state)
+}
+
 #[tauri::command]
 fn set_autostart(state: State<Watt>, enabled: bool) -> Result<StateDto, String> {
     state.engine.set_autostart(enabled)?;
@@ -231,6 +248,16 @@ fn configure_virustotal(
         .virustotal
         .configure(key, Limits::new(per_minute, per_day)?)?;
     snapshot(&state)
+}
+
+/// What VirusTotal says a key allows, for the setup dialog. `key` is the
+/// typed key, or None for the saved one. Async: it waits on the network.
+#[tauri::command]
+async fn virustotal_quota(
+    state: State<'_, Watt>,
+    key: Option<String>,
+) -> Result<virustotal::QuotaDto, String> {
+    state.virustotal.quotas(key).await
 }
 
 #[tauri::command]
@@ -358,8 +385,10 @@ pub fn run() {
             app_state,
             set_blocked,
             set_suspended,
+            set_block_all,
             set_autostart,
             configure_virustotal,
+            virustotal_quota,
             set_virustotal,
             remove_virustotal_key,
             started_hidden,

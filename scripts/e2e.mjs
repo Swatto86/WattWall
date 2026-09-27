@@ -264,12 +264,17 @@ try {
   await browser.$("#vt-key").waitForDisplayed({ timeout: 5000 });
   assert.equal(await browser.$("#vt-per-day").getValue(), "100000", "the saved limits come back");
   await browser.$("#vt-key").setValue(goodKey);
+  await browser.$("#vt-read-limits").click();
+  await browser.waitUntil(async () => (await browser.$("#vt-quota-note").getText()).includes("500 a day"),
+    { timeout: 10000, timeoutMsg: "the key's limits were not read from VirusTotal" });
+  assert.equal(await browser.$("#vt-per-minute").getValue(), "4", "240 an hour is 4 a minute");
+  assert.equal(await browser.$("#vt-per-day").getValue(), "500");
   await browser.$("#vt-save").click();
   await browser.waitUntil(() => hidden("vt-setup-overlay"), { timeout: 5000, timeoutMsg: "setup did not close" });
   await browser.$("#settings-close").click();
-  await chipIs(notepad, "VT 0/70", "ok");
-  await chipIs(curl, "VT 3/70", "bad");
-  await chipIs(marker, "VT n/a", "muted");
+  await chipIs(notepad, "0/70", "ok");
+  await chipIs(curl, "3/70", "bad");
+  await chipIs(marker, "n/a", "muted");
   await browser.execute((want) => {
     [...document.querySelectorAll("button.vt-chip")].find((el) => (el.dataset.path ?? "").toLowerCase() === want.toLowerCase())?.click();
   }, curl);
@@ -297,6 +302,20 @@ try {
   await statusIs("Blocking 1 program", "turning blocks back on did not show");
   assert.equal(notepadRule()?.outbound_enabled, true, "turning blocks back on must enable the rule");
 
+  // Block All asks first, then cuts everything off; it is kept across a restart.
+  const blockAllOn = () => {
+    const flag = join(profile, "fake-block-all.json");
+    return existsSync(flag) && JSON.parse(readFileSync(flag, "utf8")) === true;
+  };
+  await browser.$("#block-all").click();
+  await browser.waitUntil(async () => (await browser.$("#confirm-title").getText()) === "Block all internet access?",
+    { timeout: 5000, timeoutMsg: "Block all did not ask first" });
+  assert.equal(blockAllOn(), false, "nothing is blocked before the owner says yes");
+  await browser.$("#confirm-yes").click();
+  await statusIs("All internet access blocked", "Block all did not show");
+  assert.equal(blockAllOn(), true, "Block all must add its rules");
+  assert.equal(await browser.$("#block-all-text").getText(), "Allow internet");
+
   // A logon start passes --hidden: the app runs in the tray and the window stays closed.
   await exitApp();
   await connect(["--hidden"]);
@@ -304,8 +323,13 @@ try {
   assert.equal(visible.ok, true, `could not ask whether the window is visible: ${visible.message}`);
   assert.equal(visible.value, false, "a --hidden start must leave the window closed");
   await browser.waitUntil(() => pressed(notepad), { timeout: 10000, timeoutMsg: "the block did not survive a restart" });
-  await chipIs(curl, "VT 3/70", "bad");
-  await chipIs(notepad, "VT 0/70", "ok");
+  await statusIs("All internet access blocked", "Block all did not survive a restart");
+  const allowed = await invoke("set_block_all", { on: false });
+  assert.equal(allowed.ok, true, `turning Block all off failed: ${allowed.message}`);
+  assert.equal(blockAllOn(), false, "turning Block all off must remove its rules");
+  await statusIs("Blocking 1 program", "the header did not come back after Block all");
+  await chipIs(curl, "3/70", "bad");
+  await chipIs(notepad, "0/70", "ok");
   await new Promise((r) => setTimeout(r, 1500));
   assert.equal(lookups(), calls, "results after a restart come from the saved answers, not new lookups");
   const removed = await invoke("remove_virustotal_key");
@@ -321,7 +345,7 @@ try {
 
   assert.equal(mentionsMarker(join(profile, "settings.json")), true, "the test app must keep its state in the isolated profile");
   assert.equal(mentionsMarker(realSettings), false, "the test app must never write the installed app's settings");
-  console.log("PASS: boot, search, traffic reading, VirusTotal setup and results, block, turn off and on, hidden restart, cached results, allow, denied remote open, clean exit");
+  console.log("PASS: boot, search, traffic reading, VirusTotal setup and results, block, turn off and on, Block all, hidden restart, cached results, allow, denied remote open, clean exit");
 } catch (error) {
   if (browser) {
     try { console.error(await browser.execute(() => document.body.innerText.slice(-4000))); } catch { /* page already gone */ }

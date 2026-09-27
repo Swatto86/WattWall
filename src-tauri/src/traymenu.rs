@@ -22,10 +22,13 @@ use crate::{publish, show, snapshot, tray, RowDto, Watt};
 /// Menu ids of the program items start with this, then the program's path.
 const BLOCK: &str = "block:";
 
+const BLOCK_ALL_WARNING: &str = "Block all internet access?\n\nEvery program on this PC loses its network connection, including remote access such as Tailscale or Remote Desktop, until you turn Block all off in WattWall. Connections already open are closed now.";
+
 /// Everything the menu shows. Two equal plans draw the same menu.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MenuPlan {
     status: String,
+    block_all: bool,
     online: Vec<Online>,
     blocks: Blocks,
 }
@@ -53,9 +56,12 @@ pub fn plan(
     suspended: bool,
     has_rules: bool,
     elevated: bool,
+    block_all: bool,
 ) -> MenuPlan {
     let status = if !elevated {
         "not running as administrator".to_string()
+    } else if block_all {
+        "all internet access is blocked".to_string()
     } else if suspended {
         "all blocks are off".to_string()
     } else {
@@ -99,6 +105,7 @@ pub fn plan(
     };
     MenuPlan {
         status: format!("WattWall: {status}"),
+        block_all,
         online,
         blocks,
     }
@@ -137,6 +144,14 @@ pub fn build(app: &AppHandle, plan: &MenuPlan) -> tauri::Result<Menu<Wry>> {
         )?)?;
     }
     menu.append(&PredefinedMenuItem::separator(app)?)?;
+    menu.append(&CheckMenuItem::with_id(
+        app,
+        "block-all",
+        "Block all internet access",
+        true,
+        plan.block_all,
+        None::<&str>,
+    )?)?;
     let (id, text, enabled) = match plan.blocks {
         Blocks::None => ("suspend", "Turn all blocks off", false),
         Blocks::On => ("suspend", "Turn all blocks off", true),
@@ -170,6 +185,15 @@ pub fn on_menu(app: &AppHandle, id: &str) {
         "quit" => app.exit(0),
         "suspend" | "resume" => {
             let _ = state.engine.set_suspended(id == "suspend");
+            publish(app);
+        }
+        "block-all" => {
+            tray::refresh_menu(app);
+            let on = !state.engine.block_all().unwrap_or(false);
+            if on && !native_message(BLOCK_ALL_WARNING, true) {
+                return;
+            }
+            let _ = state.engine.set_block_all(on);
             publish(app);
         }
         _ => {
@@ -261,7 +285,7 @@ mod tests {
     fn lists_online_programs_by_name_and_says_which_are_blocked() {
         let blocked = [row("zeta.exe", true, true), row("idle.exe", false, true)];
         let seen = [row("Beta.exe", true, false), row("alpha.exe", true, false)];
-        let plan = plan(&blocked, &seen, false, true, true);
+        let plan = plan(&blocked, &seen, false, true, true, false);
         let labels: Vec<&str> = plan.online.iter().map(|item| item.label.as_str()).collect();
         assert_eq!(labels, ["alpha.exe", "Beta.exe", "zeta.exe (blocked)"]);
         assert!(plan.online[2].checked);
@@ -276,16 +300,19 @@ mod tests {
         later[0].last_seen = Some(99);
         later[0].publisher = "Someone".into();
         assert_eq!(
-            plan(&[], &seen, false, false, true),
-            plan(&[], &later, false, false, true),
+            plan(&[], &seen, false, false, true, false),
+            plan(&[], &later, false, false, true, false),
             "a new last-seen time must not rebuild the menu"
         );
         let mut offline = seen.clone();
         offline[0].connected = false;
         assert_ne!(
-            plan(&[], &seen, false, false, true),
-            plan(&[], &offline, false, false, true)
+            plan(&[], &seen, false, false, true, false),
+            plan(&[], &offline, false, false, true, false)
         );
+        let locked = plan(&[], &seen, false, false, true, true);
+        assert_eq!(locked.status, "WattWall: all internet access is blocked");
+        assert!(locked.block_all);
     }
 
     #[test]
@@ -294,13 +321,13 @@ mod tests {
         system.cannot_block = true;
         let mut paused = row("a.exe", true, true);
         paused.enforced = false;
-        let plan_off = plan(&[paused], &[system], true, true, true);
+        let plan_off = plan(&[paused], &[system], true, true, true, false);
         assert_eq!(plan_off.status, "WattWall: all blocks are off");
         assert_eq!(plan_off.blocks, Blocks::Off);
         assert_eq!(plan_off.online[0].label, "a.exe (block paused)");
         assert_eq!(plan_off.online[1].label, "System (cannot block)");
         assert!(!plan_off.online[1].enabled);
-        let nothing = plan(&[], &[], false, false, false);
+        let nothing = plan(&[], &[], false, false, false, false);
         assert_eq!(nothing.status, "WattWall: not running as administrator");
         assert_eq!(nothing.blocks, Blocks::None);
         assert!(nothing.online.is_empty());

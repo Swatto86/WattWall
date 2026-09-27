@@ -30,7 +30,7 @@ The webview is elevated when the app is. It loads only the bundled page, the CSP
 
 Closing the window hides it. Quit is the tray item (and `quit_app`). The program is a window app, so opening it does not create a command prompt. A command such as `--cleanup`, launched from an existing prompt, prints into that prompt.
 
-The window follows the Windows light or dark setting. The lists are updated in place rather than rebuilt, so the three-second refresh keeps keyboard focus and does not reload program icons. While a dialog is open the rest of the window is inert, and focus returns where it was.
+The lists are tables with fixed columns (Program, VirusTotal when it is on, Status, the button) so results line up. The window follows the Windows light or dark setting. The lists are updated in place rather than rebuilt, so the three-second refresh keeps keyboard focus and does not reload program icons. While a dialog is open the rest of the window is inert, and focus returns where it was.
 
 The debug build's file-backed firewall needs no administrator, so the "not running as administrator" warning only appears against the real firewall (`Engine::needs_admin`).
 
@@ -50,7 +50,13 @@ At the owner's request WattWall can check programs with VirusTotal, like Process
 
 The key is sealed in `secrets.bin` (AES-256-GCM, fresh nonce, temp file and rename) under a 32-byte key that is the only Credential Manager item, read at most once per process; an absent file costs no Credential Manager read. This is the vault pattern from WattMail, built with `ring` and the Credential Manager API because both were already in the build (no `aes-gcm` or `keyring` crates). The key goes from the setup dialog to Rust once and is never sent back to the window. `--cleanup` removes the folder and the Credential Manager item.
 
+The setup dialog can read the key's real limits from VirusTotal (`/users/{key}/overall_quotas`, falling back to `/users/{key}`; VirusTotal documents that these do not use quota): the daily allowance, and a sixtieth of the hourly one a minute. A refused lookup shows VirusTotal's own reason, such as "Quota exceeded". The owner's key made one lookup and was then refused, so the reason and the real limits matter more than the documented free limits.
+
 Clicking a result opens a details dialog with the detections and a Copy report link button. WattWall runs elevated, so it does not open a browser itself.
+
+## Block All
+
+At the owner's request (he remembered ZoneAlarm's internet lock), Block All cuts every program off the network. It is two rules like a block but with no program, named exactly `WattWall Block All Out` and `WattWall Block All In`, so the "only our rules" test still matches names exactly. Block rules win over allow rules in Windows Firewall, so programs that other software allowed are cut off too. Windows keeps connections it already allowed, so turning it on closes every TCP connection whose far end is not this PC; loopback keeps working. It is not part of "Turn all blocks off", and it survives restarts because the rules are the record. The window and the tray menu ask first, since it also cuts remote access such as Tailscale. VirusTotal lookups wait while it is on. From an elevated prompt, `--allow-all` turns it off and `--cleanup-rules` removes it with every other WattWall rule.
 
 ## Tray menu
 

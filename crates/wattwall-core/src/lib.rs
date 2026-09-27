@@ -18,4 +18,4 @@ pub use model::{
 pub use pathutil::{
     check_exe_path, exe_name, is_installed_exe, path_is_under, plain_path, PathError,
 };
-pub use rules::{is_our_rule, rule_names, GROUP, MARKER};
+pub use rules::{is_our_rule, rule_names, BLOCK_ALL_IN, BLOCK_ALL_OUT, GROUP, MARKER};
