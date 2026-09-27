@@ -172,6 +172,17 @@ try {
   }, "WebDriver server did not start");
 
   await connect();
+  const fits = () => browser.execute(() => {
+    const shell = document.querySelector(".app");
+    if (!shell) return false;
+    const box = shell.getBoundingClientRect();
+    return document.documentElement.scrollWidth <= window.innerWidth + 1
+      && Math.abs(box.height - window.innerHeight) < 2;
+  });
+  await browser.waitUntil(fits, { timeout: 10000, timeoutMsg: "the window contents do not fill the window" });
+  await browser.setWindowSize(720, 480);
+  await browser.waitUntil(fits, { timeout: 10000, timeoutMsg: "the layout does not follow a smaller window" });
+
   const denied = await invoke("plugin:opener|open_url", { url: "https://example.com/" });
   assert.equal(denied.ok, false, "the window must not be allowed to open remote URLs");
 

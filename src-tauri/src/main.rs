@@ -1,7 +1,14 @@
 //! Elevation and the cleanup commands. The window itself is in `lib`.
+#![windows_subsystem = "windows"]
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if maintenance_requested(&args) {
+        // A window program has no console of its own. Attach to the one that
+        // launched a command, so --cleanup can still print. Opening the app
+        // from the tray or at logon has no parent console, so nothing appears.
+        attach_parent_console();
+    }
     if let Some(code) = maintenance(&args) {
         std::process::exit(code);
     }
@@ -13,6 +20,28 @@ fn main() {
 
 /// Firewall and cleanup commands. They use the same operations as the window.
 /// Returns a process exit code when the command was handled.
+fn maintenance_requested(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        arg == "--cleanup"
+            || arg == "--cleanup-rules"
+            || arg == "--remove-task"
+            || arg == "--blocks-off"
+            || arg == "--blocks-on"
+            || arg == "--block"
+            || arg == "--allow"
+    })
+}
+
+fn attach_parent_console() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn AttachConsole(process_id: u32) -> i32;
+    }
+    unsafe {
+        let _ = AttachConsole(u32::MAX);
+    }
+}
+
 fn maintenance(args: &[String]) -> Option<i32> {
     let cleanup = args.iter().any(|arg| arg == "--cleanup");
     let rules = args.iter().any(|arg| arg == "--cleanup-rules") || cleanup;

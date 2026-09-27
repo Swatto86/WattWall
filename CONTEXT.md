@@ -28,7 +28,7 @@ The installer is per-machine, under Program Files, because the task launches tha
 
 The webview is elevated when the app is. It loads only the bundled page, the CSP has no remote hosts, and the capability set has no shell or filesystem access. Rust checks every path: absolute, `.exe`, and the file must exist before a new block.
 
-Closing the window hides it. Quit is the tray item (and `quit_app`).
+Closing the window hides it. Quit is the tray item (and `quit_app`). The program is a window app, so opening it does not create a command prompt. A command such as `--cleanup`, launched from an existing prompt, prints into that prompt.
 
 ## Updates
 
