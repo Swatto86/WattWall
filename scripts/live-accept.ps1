@@ -3,7 +3,11 @@
 # Leaves no WattWall rules and no probe rule behind.
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)] [string] $Exe
+    [Parameter(Mandatory)] [string] $Exe,
+    # user@host of a machine this PC already reaches over SSH. The check proves that route still works
+    # while WattWall's rules are in place and after they are removed. It is a parameter because the
+    # maintainer's own machines are not named in this public repository.
+    [Parameter(Mandatory)] [string] $SshTarget
 )
 $ErrorActionPreference = 'Stop'
 $log = Join-Path $env:TEMP 'wattwall-live.log'
@@ -27,7 +31,7 @@ $hold = $null
 $probeName = 'WattWall connection probe'
 try {
     Write-Output 'ssh before'
-    ssh -o BatchMode=yes -o ConnectTimeout=15 ubuntu@swatbox 'echo ssh-ok'
+    ssh -o BatchMode=yes -o ConnectTimeout=15 $SshTarget 'echo ssh-ok'
 
     Write-Output 'cleanup twice'
     Invoke-WattWall --cleanup
@@ -95,7 +99,7 @@ try {
     if (@(Get-WattWallRules).Count -ne 0) { throw 'allow left rules behind' }
 
     Write-Output 'ssh after'
-    ssh -o BatchMode=yes -o ConnectTimeout=15 ubuntu@swatbox 'echo ssh-ok'
+    ssh -o BatchMode=yes -o ConnectTimeout=15 $SshTarget 'echo ssh-ok'
     Write-Output 'LIVE OK'
 } finally {
     if ($hold -and -not $hold.HasExited) { Stop-Process -Id $hold.Id -Force -ErrorAction SilentlyContinue }

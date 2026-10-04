@@ -8,7 +8,7 @@ Windows tray app that adds per-program block rules to the Windows Firewall. `ARC
 - Iteration: `pwsh scripts/fastcheck.ps1` (`-Package wattwall-core` checks that crate only).
 - Full gate: `pwsh scripts/verify.ps1` (frontend, fmt, clippy, tests, `tauri build --debug --no-bundle`, WebDriver). From PowerShell, `msedgedriver` must be on `PATH` (`C:\Users\Swatto\bin`).
 - Install check (elevated): after `AGENT_RELEASE=1 npx tauri build`, run `scripts/install-handoff.ps1`. It upgrades the installed copy in place (a silent setup over it only replaces files; the uninstall hook does nothing when silent), keeps the owner's rules, saved list and logon task, blocks and allows `curl.exe` against the real firewall, and restarts WattWall through the logon task with its window hidden. `-WipeUserRulesAndData` also tests `--cleanup`, which deletes his rules, logon task and saved list: never use it on his PC without asking. `-TestBlockAll` turns Block All on and off, which cuts every program on the PC off for those seconds: ask first too.
-- Real firewall check (elevated): `scripts/live-accept.ps1`. It runs `--cleanup` before and after, so the same warning applies.
+- Real firewall check (elevated): `scripts/live-accept.ps1 -Exe <wattwall.exe> -SshTarget <user@host>`. It runs `--cleanup` before and after, so the same warning applies. The SSH target is a machine fact (agent-memory host facts), not named in this public repository.
 - App icons: edit `src-tauri/icons/source/*.svg`, then `node scripts/icons.mjs`. The tray and taskbar icon is drawn at run time (`crates/wattwall-core/src/meter.rs`).
 - Release install is local and unsigned until a tag is published. Do not tag or publish a GitHub release unless asked.
 
