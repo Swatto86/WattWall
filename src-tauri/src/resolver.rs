@@ -11,6 +11,7 @@ use std::fs;
 use std::io::Write;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use wattwall_core::monitor::{clean_name, reverse_name, Failure};
 use windows::core::PCWSTR;
@@ -24,6 +25,10 @@ use windows::Win32::NetworkManagement::Dns::{
 
 pub(crate) const FAKE_NAMES: &str = "fake-dns.json";
 pub(crate) const FAKE_CALLS: &str = "fake-dns-calls.log";
+/// Held while a question is noted. The workers ask at once, and lines
+/// appended at the same moment can be cut into each other or overwritten,
+/// depending on how the file system appends.
+static NOTING: Mutex<()> = Mutex::new(());
 /// Only DNS: no NetBIOS node-status probe, no multicast, and the name is
 /// already complete, so no search suffixes are tried.
 const ONLY_DNS: DNS_QUERY_OPTIONS =
@@ -115,12 +120,15 @@ unsafe fn first_ptr(records: *mut DNS_RECORDW) -> Option<String> {
 }
 
 fn fake(dir: &Path, address: IpAddr) -> Result<String, Failure> {
-    if let Ok(mut log) = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join(FAKE_CALLS))
     {
-        let _ = writeln!(log, "{address}");
+        let _one_at_a_time = NOTING.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Ok(mut log) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join(FAKE_CALLS))
+        {
+            let _ = writeln!(log, "{address}");
+        }
     }
     let text = fs::read_to_string(dir.join(FAKE_NAMES)).map_err(|_| Failure::NotFound)?;
     let names: HashMap<String, String> =
@@ -186,6 +194,39 @@ mod tests {
             Some("host.example")
         );
     }
+    /// The four workers ask at once, and every question has to reach the log,
+    /// whole: noted unguarded, two came out cut into each other.
+    #[test]
+    fn questions_asked_at_the_same_moment_are_each_noted_whole() {
+        const ASKERS: usize = 8;
+        const QUESTIONS: usize = 200;
+        let dir = std::env::temp_dir().join(format!("wattwall-resolver-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        std::thread::scope(|scope| {
+            for asker in 0..ASKERS {
+                let dir = &dir;
+                scope.spawn(move || {
+                    let address = ip(&format!("203.0.113.{}", 100 + asker));
+                    for _ in 0..QUESTIONS {
+                        let _ = fake(dir, address);
+                    }
+                });
+            }
+        });
+        let log = fs::read_to_string(dir.join(FAKE_CALLS)).unwrap();
+        let mut noted: HashMap<IpAddr, usize> = HashMap::new();
+        for line in log.lines() {
+            let address: IpAddr = line
+                .parse()
+                .unwrap_or_else(|_| panic!("a question cut into another: {line:?}"));
+            *noted.entry(address).or_default() += 1;
+        }
+        assert_eq!(noted.len(), ASKERS);
+        assert!(noted.values().all(|count| *count == QUESTIONS), "{noted:?}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// Asks Windows' own resolver, so it is run on purpose:
     /// `cargo test -p wattwall-desktop live_ -- --ignored`.
     #[test]
