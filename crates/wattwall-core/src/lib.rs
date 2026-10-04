@@ -1,11 +1,13 @@
 //! Decisions WattWall can explain without talking to Windows: which firewall
 //! rules are ours, which programs need a warning, how the window's list is
 //! built from rules plus what has been seen on the network, how the tray icon
-//! draws the traffic meter, and the VirusTotal rules that need no network.
+//! draws the traffic meter, how the network monitor reads, sorts and names
+//! connections, and the VirusTotal rules that need no network.
 
 mod danger;
 mod meter;
 mod model;
+pub mod monitor;
 mod pathutil;
 mod rules;
 pub mod virustotal;

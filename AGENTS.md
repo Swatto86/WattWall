@@ -1,6 +1,6 @@
 # WattWall — agent context
 
-Windows tray app that adds per-program block rules to the Windows Firewall. `ARCHITECTURE.md` is the map. `CONTEXT.md` is the decisions still in force.
+Windows tray app that adds per-program block rules to the Windows Firewall, and lists the connections programs have. `ARCHITECTURE.md` is the map. `CONTEXT.md` is the decisions still in force.
 
 ## Build / run / verify
 
@@ -18,15 +18,17 @@ Windows tray app that adds per-program block rules to the Windows Firewall. `ARC
 - A block is an outbound rule and an inbound rule for one exe path, group `WattWall`, description `WattWall v1`. Never edit, disable or delete a rule that does not match both the group and that description.
 - Block All is two more rules with no program, named exactly `WattWall Block All Out` and `WattWall Block All In`. Turning it on also closes every non-loopback TCP connection. It is separate from turning all blocks off. `--block-all` and `--allow-all` switch it from an elevated prompt; `--cleanup-rules` removes it.
 - The rules are the source of truth. In `%LOCALAPPDATA%\WattWall` the app keeps remembered programs and the autostart preference (`settings.json`), the VirusTotal choice, limits, hashes and answers (`virustotal.json`), and the VirusTotal key sealed in `secrets.bin`. The sealing key is the one Credential Manager item, `WattWall/vault-key`; `--cleanup` removes it with the folder.
-- Network: GitHub for updates and, only when the owner turns it on, VirusTotal (`GET /api/v3/files/<sha256>`, hashes only, never files). The key never reaches the webview. Live check of the real request: `cargo test -p wattwall-desktop live_ -- --ignored`.
+- Network: GitHub for updates and, only when the owner turns it on, VirusTotal (`GET /api/v3/files/<sha256>`, hashes only, never files). The key never reaches the webview. The Connections view asks this PC's own DNS client for the PTR record of each far address (`DnsQuery_W`, DNS only: no NetBIOS or multicast), only while the view is open and the window is showing, and only while Settings > Look up host names is on. Nothing about connections is written to disk. Live check of the real requests: `cargo test -p wattwall-desktop live_ -- --ignored`.
 - The release build relaunches itself elevated when it is not. Logon start is a scheduled task, highest privileges, only for `Program Files\WattWall\WattWall.exe` after junctions are resolved. Portable and `target\` builds cannot enable it.
 - The webview is bundled content only: strict CSP, no remote URLs, no shell or filesystem permissions. Rust checks every path the window sends.
 - Confirm before blocking `svchost.exe`, `lsass.exe`, `tailscaled.exe`, `tailscale-ipn.exe`, or WattWall itself. `System` has no program file and cannot be blocked.
 - `--cleanup` removes WattWall's rules, the task and app data, and is safe to run twice. Uninstall always removes the task and asks about the rules. A silent update must not ask and must not remove the rules.
-- WebDriver uses `WATTWALL_FAKE=1` and `WATTWALL_E2E=1` (debug builds only) so it does not touch the real firewall, the single-instance lock, Credential Manager or the network (VirusTotal answers from a table).
+- WebDriver uses `WATTWALL_FAKE=1` and `WATTWALL_E2E=1` (debug builds only) so it does not touch the real firewall, the single-instance lock, Credential Manager or the network (VirusTotal and host names answer from tables; the Connections view reads `fake-sockets.json`, `fake-dns.json` and notes questions in `fake-dns-calls.log`).
 - The tray menu must stay open while the owner reads it: nothing may change the tray, its menu or the window icons while a WattWall popup menu is on screen (`traymenu::is_open`).
 
 ## Open questions
 
 - macOS and Linux. On macOS, blocking outbound traffic per app needs Apple's Network Extension and a paid developer ID.
 - Store (UWP) apps, individual services inside `svchost`, per-domain or per-port rules, and an alert when a blocked app tries to connect (that needs a change to Windows' audit policy).
+- Connections view: who a UDP program talks to (Windows keeps no record in the tables; it would need ETW or the filtering platform), the names programs asked for rather than reverse names (the DNS client cache is undocumented), forward-confirming reverse names (the address owner chooses them, so a name is not proof), and a log of past connections (none is kept on purpose).
+- The Connections view was built where Windows could not be run: its table decoding and name lookup were run under Wine only, which reports no owning process, and Windows' own handling of `DnsQuery_W` flags (no NetBIOS, no multicast) is unobserved. Run `cargo test -p wattwall-desktop` and, once, `cargo test -p wattwall-desktop live_ -- --ignored` on Windows, then delete this line.

@@ -30,6 +30,10 @@ export const SHELL = `
     </header>
     <div id="update-banner" class="banner info hidden" role="status">${icon.download}<span id="update-text"></span></div>
     <div id="warnings"></div>
+    <div id="views" class="tabs" role="tablist" aria-label="View">
+      <button id="tab-programs" class="tab" type="button" role="tab" aria-selected="true" aria-controls="panel-programs">${icon.wall}<span>Programs</span></button>
+      <button id="tab-connections" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-connections" tabindex="-1">${icon.network}<span>Connections</span></button>
+    </div>
     <div class="toolbar">
       <label class="search">
         ${icon.search}
@@ -40,7 +44,8 @@ export const SHELL = `
       <button id="suspend" class="btn" type="button" data-suspended="false">${icon.pause}${icon.play}<span id="suspend-text">Turn all blocks off</span></button>
       <button id="block-program" class="btn primary" type="button">${icon.plus}<span>Block a program…</span></button>
     </div>
-    <main class="list">
+    <main class="panels">
+    <div id="panel-programs" class="list" role="tabpanel" aria-labelledby="tab-programs">
       <section aria-labelledby="blocked-title">
         <h2 id="blocked-title">Blocked <span id="blocked-count" class="count">0</span></h2>
         <div class="rows"><div class="thead" aria-hidden="true"><span></span><span>Program</span><span class="th-vt">VirusTotal</span><span>Status</span><span></span></div><div id="blocked" class="tbody"></div></div>
@@ -49,6 +54,19 @@ export const SHELL = `
         <h2 id="seen-title">Seen using the network <span id="seen-count" class="count">0</span></h2>
         <div class="rows"><div class="thead" aria-hidden="true"><span></span><span>Program</span><span class="th-vt">VirusTotal</span><span>Status</span><span></span></div><div id="seen" class="tbody"></div></div>
       </section>
+    </div>
+    <div id="panel-connections" class="list monitor hidden" role="tabpanel" aria-labelledby="tab-connections">
+      <div class="monitor-bar">
+        <div id="direction-filter" class="seg" role="group" aria-label="Show"></div>
+        <label class="check"><input id="include-this-pc" type="checkbox" /><span>Include this PC's own connections</span></label>
+      </div>
+      <div class="rows">
+        <div class="thead conn-head" aria-hidden="true"><span></span><span>Program</span><span>Direction</span><span>Remote</span><span>Local</span><span></span></div>
+        <div id="connections" class="tbody"></div>
+      </div>
+      <div id="monitor-note" class="monitor-note"></div>
+      <p class="hint explainer">Incoming and outgoing are worked out from the ports: a connection to a port that a program is listening on is incoming. For UDP, Windows lists only the open ports, not who they talk to.</p>
+    </div>
     </main>
   </div>
   <div id="settings-overlay" class="overlay hidden">
@@ -65,6 +83,10 @@ export const SHELL = `
         <span class="setting-text"><span class="setting-name">Updates</span><span class="hint">WattWall checks at start and every four hours, then installs and restarts by itself.</span></span>
         <button id="check-updates" class="btn" type="button">Check now</button>
       </div>
+      <label class="setting">
+        <span class="setting-text"><span class="setting-name">Look up host names</span><span class="hint">The Connections view asks this PC's DNS server for the name behind each remote address. Turn off to stop these lookups and see addresses only.</span></span>
+        <input id="resolve-names" class="switch" type="checkbox" role="switch" />
+      </label>
       <div class="setting">
         <span class="setting-text"><span class="setting-name">Check programs with VirusTotal</span><span class="hint">Sends each program's SHA-256 hash, never the file, using your own API key.</span></span>
         <input id="vt-enabled" class="switch" type="checkbox" role="switch" aria-label="Check programs with VirusTotal" />

@@ -7,6 +7,7 @@ WattWall blocks the programs you choose, using the Windows Firewall that is alre
 ## What it does
 
 - **Shows who is on the network.** Every program with a connection or an open port appears with its icon, verified publisher and when it was last seen. Programs you have blocked are listed at the top.
+- **Shows every connection, incoming and outgoing.** The Connections tab lists each TCP connection with the program that owns it, which way it goes, where the other end is (with its host name when DNS has one, and its address and port) and which port on this PC it uses. Ports that programs are listening on are listed too, and a connection that has just closed stays on the list for a minute. Filter by direction or search by program, host or port, and block a program from its own line.
 - **Blocks in one click.** Block adds two firewall rules for that program's file, outbound and inbound, and closes the connections it already has. Allow removes them. Block a program lets you pick any `.exe`.
 - **Block all internet access.** One switch cuts every program off the network, like ZoneAlarm's internet lock, and closes the connections they have open. Allow internet (or `WattWall.exe --allow-all` from an administrator prompt) turns it off.
 - **Turn all blocks off, and on again.** Handy for checking whether a block is what stopped something working. The rules are switched off, not deleted.
@@ -16,9 +17,17 @@ WattWall blocks the programs you choose, using the Windows Firewall that is alre
 - **Updates itself** from this repository's releases: download, install and restart, with only a banner.
 - **Asks first** before blocking programs Windows or your VPN need (`svchost.exe`, `lsass.exe`, `tailscaled.exe`, `tailscale-ipn.exe`) or WattWall itself. `System` has no program file, so it cannot be blocked.
 
+## The Connections tab
+
+- **Incoming or outgoing** is worked out from the ports, because Windows does not record who started a connection: one to a port a program is listening on is incoming, one from a fresh port is outgoing. A program that connects out from the port it also listens on is usually shown as incoming.
+- **UDP** shows only the open ports (as Listening). Windows keeps no record of who a UDP program talks to, so a browser's QUIC traffic does not appear as a connection.
+- **Host names** come from asking your PC's own DNS server what name belongs to each remote address (nothing on your local network is probed). That is the name of the address, not the name the program asked for, so a big site may show a name like `ec2-3-4-5-6.compute-1.amazonaws.com`, and the owner of an address chooses its name, so treat it as a hint, not proof. A device on your own network gets a name only if your DNS server knows it. Asking tells your DNS server which addresses you connect to, so Settings has a "Look up host names" switch. WattWall looks nothing up until you open the tab, and stops when you leave it, hide the window in the tray or minimize it.
+- **Nothing is saved.** Connections are not written to disk; the list starts empty each time WattWall starts.
+- Connections between programs on this PC (loopback) are hidden until you tick "Include this PC's own connections".
+
 ## Where the rules live
 
-Each block is two rules in Windows Defender Firewall, in a group named WattWall. You can see them in `wf.msc`. WattWall only ever changes rules it created, and those rules are the record of what is blocked. The app itself keeps the list of programs it has seen and the start-with-Windows choice in `settings.json` and, if you turn VirusTotal on, its answers in `virustotal.json` and your key, encrypted, in `secrets.bin`, all in `%LOCALAPPDATA%\WattWall`.
+Each block is two rules in Windows Defender Firewall, in a group named WattWall. You can see them in `wf.msc`. WattWall only ever changes rules it created, and those rules are the record of what is blocked. The app itself keeps the list of programs it has seen, the start-with-Windows choice and the host-names choice in `settings.json` and, if you turn VirusTotal on, its answers in `virustotal.json` and your key, encrypted, in `secrets.bin`, all in `%LOCALAPPDATA%\WattWall`.
 
 ## The tray menu
 

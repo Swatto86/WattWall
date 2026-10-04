@@ -10,13 +10,13 @@ use std::collections::BTreeSet;
 use std::fs;
 
 use windows::Win32::NetworkManagement::IpHelper::{
-    GetExtendedTcpTable, GetExtendedUdpTable, SetTcpEntry, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_LH,
-    MIB_TCPROW_OWNER_PID, MIB_TCP_STATE_DELETE_TCB, MIB_TCP_STATE_LISTEN, MIB_UDP6ROW_OWNER_PID,
-    MIB_UDPROW_OWNER_PID, TCP_TABLE_OWNER_PID_ALL, UDP_TABLE_OWNER_PID,
+    SetTcpEntry, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_LH, MIB_TCPROW_OWNER_PID,
+    MIB_TCP_STATE_DELETE_TCB, MIB_TCP_STATE_LISTEN, MIB_UDP6ROW_OWNER_PID, MIB_UDPROW_OWNER_PID,
 };
 use windows::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 
 use crate::programs::path_for_pid;
+use crate::tables::table;
 
 const CONNECTIONS: &str = "fake-connections.json";
 
@@ -107,52 +107,6 @@ fn row_pids<T: Copy>(family: u32, tcp: bool, pids: &mut BTreeSet<u32>) -> Result
         }
     }
     Ok(())
-}
-
-fn table(family: u32, tcp: bool) -> Result<Vec<u8>, String> {
-    let mut size = 0u32;
-    let first = unsafe {
-        if tcp {
-            GetExtendedTcpTable(None, &mut size, false, family, TCP_TABLE_OWNER_PID_ALL, 0)
-        } else {
-            GetExtendedUdpTable(None, &mut size, false, family, UDP_TABLE_OWNER_PID, 0)
-        }
-    };
-    // 122 is ERROR_INSUFFICIENT_BUFFER, which is the expected first answer.
-    if first != 0 && first != 122 {
-        return Err(format!("Could not read the connection table ({first})."));
-    }
-    if size == 0 {
-        return Ok(Vec::new());
-    }
-    let mut buf = vec![0u8; size as usize + 64];
-    let mut size = buf.len() as u32;
-    let second = unsafe {
-        if tcp {
-            GetExtendedTcpTable(
-                Some(buf.as_mut_ptr().cast()),
-                &mut size,
-                false,
-                family,
-                TCP_TABLE_OWNER_PID_ALL,
-                0,
-            )
-        } else {
-            GetExtendedUdpTable(
-                Some(buf.as_mut_ptr().cast()),
-                &mut size,
-                false,
-                family,
-                UDP_TABLE_OWNER_PID,
-                0,
-            )
-        }
-    };
-    if second != 0 {
-        return Err(format!("Could not read the connection table ({second})."));
-    }
-    buf.truncate(size as usize);
-    Ok(buf)
 }
 
 fn live_close(path: &str) -> Result<u32, String> {

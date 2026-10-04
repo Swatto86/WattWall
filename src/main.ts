@@ -7,6 +7,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { matches } from "./filter";
 import { headline, meterLevel, type AppState, type Row, type Traffic } from "./model";
+import { setUpMonitor } from "./monitor";
 import { applyLabel, banner, pathKey, RowList, SHELL } from "./view";
 import { setUpVirusTotal } from "./vt";
 
@@ -49,6 +50,19 @@ const virusTotal = setUpVirusTotal({
 });
 const blockedList = new RowList($("#blocked"), (row) => void onToggle(row), (row) => virusTotal.openDetails(row));
 const seenList = new RowList($("#seen"), (row) => void onToggle(row), (row) => virusTotal.openDetails(row));
+const monitor = setUpMonitor({
+  $,
+  state: () => state,
+  update: (next) => {
+    state = next;
+    paint();
+  },
+  say: (message) => {
+    settingsMsg.textContent = message;
+  },
+  busy: () => busyPaths,
+  toggle: (path, blocked) => void apply(path, blocked, false),
+});
 
 function paint(): void {
   if (!state) return;
@@ -99,6 +113,7 @@ function paint(): void {
   $("#autostart-reason").textContent =
     state.autostartReason || "Opens hidden in the tray when you sign in, with no administrator prompt.";
   virusTotal.paint(state);
+  monitor.paint();
 }
 
 async function onToggle(row: Row): Promise<void> {
@@ -112,7 +127,7 @@ async function onToggle(row: Row): Promise<void> {
 async function apply(path: string, blocked: boolean, confirmed: boolean): Promise<void> {
   const key = pathKey(path);
   const focused = document.activeElement;
-  const refocus = focused instanceof HTMLButtonElement && pathKey(focused.dataset.path ?? "") === key;
+  const refocus = focused instanceof HTMLButtonElement && pathKey(focused.dataset.path ?? "") === key ? focused : null;
   busyPaths.add(key);
   working += 1;
   paint();
@@ -131,7 +146,11 @@ async function apply(path: string, blocked: boolean, confirmed: boolean): Promis
     paint();
   }
   if (refocus && !isOpen()) {
-    app.querySelector<HTMLButtonElement>(`button.toggle[data-path="${CSS.escape(path)}"]`)?.focus();
+    // The same button if it is still there (a line of the Connections view is updated in
+    // place), else the program's button in the view being shown: a block moves a row between
+    // lists.
+    const shown = refocus.isConnected && refocus.offsetParent !== null ? refocus : null;
+    (shown ?? app.querySelector<HTMLButtonElement>(`.panels > :not(.hidden) button.toggle[data-path="${CSS.escape(path)}"]`))?.focus();
   }
 }
 

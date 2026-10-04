@@ -51,6 +51,8 @@ export interface AppState {
   elevated: boolean;
   /** Block All: every program is cut off from the network. */
   blockAll: boolean;
+  /** The Connections view looks up host names for far addresses. */
+  resolveNames: boolean;
   virustotal: VtSummary;
 }
 

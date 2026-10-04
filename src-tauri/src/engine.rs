@@ -146,6 +146,25 @@ impl Engine {
         Ok(())
     }
 
+    /// Whether the Connections view looks up host names. Off if the settings
+    /// lock is broken, so a fault never means more lookups.
+    pub fn resolve_names(&self) -> bool {
+        self.settings
+            .lock()
+            .is_ok_and(|settings| settings.resolve_names)
+    }
+
+    /// Save the choice before reporting it; a failed save leaves the old one.
+    pub fn set_resolve_names(&self, enabled: bool) -> Result<(), String> {
+        let mut settings = self
+            .settings
+            .lock()
+            .map_err(|_| "WattWall's settings lock failed.".to_string())?;
+        let before = settings.resolve_names;
+        settings.resolve_names = enabled;
+        store::save(&self.data_dir, &settings).inspect_err(|_| settings.resolve_names = before)
+    }
+
     pub fn set_autostart(&self, enabled: bool) -> Result<(), String> {
         if !self.live {
             return Err("Autostart is not available in the test copy.".to_string());
@@ -254,9 +273,56 @@ fn impossible_text() -> &'static str {
     }
 }
 
-fn unix_now() -> i64 {
+pub(crate) fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn engine_in(dir: PathBuf) -> Engine {
+        Engine {
+            firewall: Firewall::Fake(dir.join("fake-rules.json")),
+            connections: Connections::Fake(dir.clone()),
+            data_dir: dir,
+            settings: Mutex::new(store::Settings::default()),
+            live: false,
+        }
+    }
+
+    fn scratch(label: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("wattwall-engine-{label}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_file(&dir);
+        dir
+    }
+
+    #[test]
+    fn the_host_names_choice_is_saved_before_it_is_reported() {
+        let dir = scratch("saved");
+        let engine = engine_in(dir.clone());
+        assert!(engine.resolve_names());
+        engine.set_resolve_names(false).unwrap();
+        assert!(!engine.resolve_names());
+        assert!(!store::load(&dir).resolve_names, "the file says off");
+        engine.set_resolve_names(true).unwrap();
+        assert!(store::load(&dir).resolve_names);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_choice_that_cannot_be_saved_leaves_the_old_one_in_force() {
+        // A file where the folder should be: the save cannot succeed.
+        let dir = scratch("unsaved");
+        fs::write(&dir, "in the way").unwrap();
+        let engine = engine_in(dir.clone());
+        assert!(engine.set_resolve_names(false).is_err());
+        assert!(engine.resolve_names(), "still on: nothing was saved");
+        fs::remove_file(&dir).unwrap();
+    }
 }

@@ -2,12 +2,16 @@
 // webview on an isolated profile, with a file-backed firewall so the suite
 // does not change this PC's Windows Firewall rules.
 //
-// Covers boot to the main window, the live traffic reading, VirusTotal setup
-// and results (test mode answers from a table, no network or Credential
-// Manager), blocking a program, turning every block off and on, a hidden
-// (logon-style) restart that keeps the block and the saved results,
-// allowing it again, a command the window is not allowed to call, and a
-// clean exit.
+// size-exception: one linear journey on one app instance; its steps share state, so splitting it would not make it clearer
+//
+// Covers boot to the main window, the live traffic reading, the Connections
+// view (directions, host names from a table, a connection that closes,
+// blocking from a line, the host-names switch and its persistence),
+// VirusTotal setup and results (test mode answers from a table, no network
+// or Credential Manager), blocking a program, turning every block off and
+// on, a hidden (logon-style) restart that keeps the block and the saved
+// results, allowing it again, a command the window is not allowed to call,
+// and a clean exit.
 import { remote } from "webdriverio";
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:net";
@@ -50,6 +54,22 @@ const curl = "C:\\Windows\\System32\\curl.exe";
 // installed app's settings, even while an installed WattWall writes its own.
 const marker = `C:\\WattWall-e2e-${randomUUID()}\\probe.exe`;
 writeFileSync(join(profile, "fake-connections.json"), JSON.stringify([notepad, curl, marker]));
+// What the Connections view reads: curl connects out (to a name the test DNS table
+// knows) and to a server on this PC, notepad listens and has one connection
+// accepted, the marker has a UDP port, and a program whose file name looks like
+// markup (legal on Windows) must be shown as the text it is.
+const socketsFile = join(profile, "fake-sockets.json");
+const sockets = [
+  { path: curl, pid: 4101, protocol: "tcp", state: "established", local: "192.168.50.20:50123", remote: "203.0.113.7:443" },
+  { path: notepad, pid: 4102, protocol: "tcp", state: "listen", local: "0.0.0.0:3389" },
+  { path: notepad, pid: 4102, protocol: "tcp", state: "established", local: "192.168.50.20:3389", remote: "198.51.100.9:51234" },
+  { path: marker, pid: 4103, protocol: "udp", local: "0.0.0.0:5353" },
+  { path: "C:\\Tools\\A&amp;B<i>.exe", pid: 4104, protocol: "udp", local: "0.0.0.0:5354" },
+  { path: curl, pid: 4101, protocol: "tcp", state: "established", local: "127.0.0.1:50200", remote: "127.0.0.1:8080" },
+];
+const setSockets = (rows) => writeFileSync(socketsFile, JSON.stringify(rows));
+setSockets(sockets);
+writeFileSync(join(profile, "fake-dns.json"), JSON.stringify({ "203.0.113.7": "example.test", "192.0.2.44": "late.example.test" }));
 const mentionsMarker = (path) => existsSync(path) && readFileSync(path, "utf8").toLowerCase().includes(marker.toLowerCase().replaceAll("\\", "\\\\"));
 
 const appEnv = {
@@ -225,6 +245,102 @@ try {
   const notepadRule = () => JSON.parse(readFileSync(join(profile, "fake-rules.json"), "utf8"))
     .find((rule) => String(rule.path).toLowerCase().endsWith("notepad.exe"));
 
+  // Connections: which way each goes, host names, a connection that closes,
+  // blocking from a line, and the host-names switch.
+  const lines = () => browser.execute(() => [...document.querySelectorAll("#connections .conn")].map((row) => ({
+    name: row.querySelector(".name").textContent,
+    direction: row.dataset.direction,
+    phase: row.dataset.phase,
+    host: row.querySelector(".host").textContent,
+    port: row.querySelector(".port").textContent,
+    portShown: row.querySelector(".port").getBoundingClientRect().width > 0,
+    button: row.querySelector("button").textContent,
+  })));
+  const linesAre = (message, check) => browser.waitUntil(async () => check(await lines()),
+    { timeout: 15000, timeoutMsg: message });
+  const dnsQuestions = () => {
+    const log = join(profile, "fake-dns-calls.log");
+    return existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [];
+  };
+  const clickLine = (direction) => browser.execute((want) => {
+    document.querySelector(`#connections .conn[data-direction="${want}"][data-phase="connected"] button`)?.click();
+  }, direction);
+  const pickNames = async (on) => {
+    await browser.$("#settings").click();
+    if ((await browser.$("#resolve-names").isSelected()) !== on) await browser.$("#resolve-names").click();
+    await browser.waitUntil(async () => (await invoke("app_state")).value.resolveNames === on,
+      { timeout: 5000, timeoutMsg: `the names switch did not turn ${on ? "on" : "off"}` });
+    await browser.$("#settings-close").click();
+    await browser.waitUntil(() => hidden("settings-overlay"), { timeout: 5000, timeoutMsg: "settings did not close" });
+  };
+
+  assert.equal(await hidden("panel-connections"), true, "the Connections view starts closed");
+  assert.equal(dnsQuestions().length, 0, "nothing is asked of DNS before the Connections view is opened");
+  await browser.$("#tab-connections").click();
+  await linesAre("the Connections view did not list the sockets", (rows) => rows.length === 5);
+  const first = await lines();
+  assert.ok(first.every((row) => row.portShown), "every line shows its port, even in this small window");
+  assert.ok(first.some((row) => row.name === "A&amp;B<i>.exe"), "a program name is shown as the text it is, not read as markup");
+  assert.equal(await browser.execute(() => document.querySelectorAll("#connections i").length), 0, "no element came out of a program name");
+  // The look through the real invoke boundary: names and casing of what the window reads.
+  const looked = await invoke("monitor_snapshot");
+  assert.equal(looked.ok, true, `monitor_snapshot failed: ${looked.message}`);
+  assert.deepEqual(Object.keys(looked.value).sort(), ["connections", "names", "now", "pendingNames", "truncated"]);
+  assert.deepEqual(Object.keys(looked.value.connections[0]).sort(), [
+    "closedAt", "direction", "firstSeen", "key", "localAddress", "localPort", "name", "path", "phase", "pid",
+    "protocol", "reach", "remoteAddress", "remoteName", "remotePort",
+  ]);
+  const has = (rows, name, direction) => rows.some((row) => row.name === name && row.direction === direction);
+  assert.ok(has(first, "curl.exe", "outgoing"), "a connection from a fresh port is outgoing");
+  assert.ok(has(first, "notepad.exe", "listening"), "a listening port is listed as listening");
+  assert.ok(has(first, "notepad.exe", "incoming"), "a connection to a listening port is incoming");
+  assert.ok(has(first, "probe.exe", "listening"), "a UDP port is listed as listening");
+  assert.equal(first.some((row) => row.port === "50200"), false, "this PC's own connections are hidden at first");
+  await linesAre("the host name never replaced the address", (rows) => rows.some((row) => row.host === "example.test"));
+  await browser.waitUntil(() => dnsQuestions().length === 2, { timeout: 10000, timeoutMsg: "both far addresses should have been asked about" });
+  assert.deepEqual(dnsQuestions().sort(), ["198.51.100.9", "203.0.113.7"],
+    "each far address is asked about once, and this PC's own address never");
+
+  await browser.$('#direction-filter [data-filter="incoming"]').click();
+  await linesAre("the Incoming filter did not narrow the list", (rows) => rows.length === 1 && rows[0].direction === "incoming");
+  await browser.$('#direction-filter [data-filter="all"]').click();
+  await browser.$("#include-this-pc").click();
+  await linesAre("this PC's own connection did not appear when asked for", (rows) => rows.some((row) => row.port === "50200"));
+  await browser.$("#include-this-pc").click();
+
+  // A connection that goes away stays listed for a minute, marked closed.
+  setSockets(sockets.filter((socket) => socket.remote !== "203.0.113.7:443"));
+  await linesAre("a closed connection did not stay listed as closed",
+    (rows) => rows.some((row) => row.name === "curl.exe" && row.phase === "closed"));
+  setSockets(sockets);
+  await linesAre("a connection that came back was not listed as live",
+    (rows) => rows.some((row) => row.name === "curl.exe" && row.phase === "connected" && row.host === "example.test"));
+
+  // Blocking from a line is the same block as from the Programs list, and Allow undoes it.
+  await clickLine("incoming");
+  await browser.waitUntil(() => notepadRule()?.outbound_enabled === true, { timeout: 10000, timeoutMsg: "blocking from a line wrote no rule" });
+  await statusIs("Blocking 1 program", "the header did not report a block made from a line");
+  await linesAre("the lines of a blocked program did not offer Allow",
+    (rows) => rows.filter((row) => row.name === "notepad.exe").every((row) => row.button === "Allow"));
+  await clickLine("incoming");
+  await browser.waitUntil(() => notepadRule() === undefined, { timeout: 10000, timeoutMsg: "Allow from a line did not remove the rule" });
+  await statusIs("Nothing blocked yet", "the header did not clear after Allow from a line");
+
+  // With names off the address stays, and nothing new is asked; with names on they come.
+  await pickNames(false);
+  await linesAre("a host name stayed on show after names were turned off", (rows) => rows.every((row) => row.host !== "example.test"));
+  setSockets([...sockets, { path: curl, pid: 4101, protocol: "tcp", state: "established", local: "192.168.50.20:50124", remote: "192.0.2.44:443" }]);
+  await linesAre("the new connection did not appear", (rows) => rows.some((row) => row.host === "192.0.2.44"));
+  await new Promise((r) => setTimeout(r, 3000)); // a few more looks, so a lookup that was going to happen has happened
+  assert.equal(dnsQuestions().includes("192.0.2.44"), false, "nothing is asked of DNS while names are off");
+  await pickNames(true);
+  await linesAre("the host name did not come back when names were turned on", (rows) => rows.some((row) => row.host === "late.example.test"));
+  assert.equal(dnsQuestions().filter((ip) => ip === "192.0.2.44").length, 1);
+  await pickNames(false);
+  await browser.$("#tab-programs").click();
+  const closing = await invoke("monitor_close");
+  assert.equal(closing.ok, true, `monitor_close failed: ${closing.message}`);
+
   // VirusTotal, against the test mode's table: curl.exe is flagged,
   // notepad.exe is clean, and the made-up marker file cannot be hashed.
   const vtChip = (path) => browser.execute((want) => {
@@ -322,6 +438,15 @@ try {
   const visible = await invoke("plugin:window|is_visible", { label: "main" });
   assert.equal(visible.ok, true, `could not ask whether the window is visible: ${visible.message}`);
   assert.equal(visible.value, false, "a --hidden start must leave the window closed");
+  const askedBefore = dnsQuestions().length;
+  const unwatched = await invoke("monitor_snapshot");
+  assert.equal(unwatched.ok, true, `the connection look failed: ${unwatched.message}`);
+  assert.equal(unwatched.value, null, "a hidden window is not looked at");
+  await new Promise((r) => setTimeout(r, 2500));
+  assert.equal(dnsQuestions().length, askedBefore, "nothing is asked of DNS for a hidden window");
+  assert.equal((await invoke("app_state")).value.resolveNames, false, "the host-names switch must survive a restart");
+  const namesBack = await invoke("set_resolve_names", { enabled: true });
+  assert.equal(namesBack.ok, true, `turning names on failed: ${namesBack.message}`);
   await browser.waitUntil(() => pressed(notepad), { timeout: 10000, timeoutMsg: "the block did not survive a restart" });
   await statusIs("All internet access blocked", "Block all did not survive a restart");
   const allowed = await invoke("set_block_all", { on: false });
@@ -345,7 +470,7 @@ try {
 
   assert.equal(mentionsMarker(join(profile, "settings.json")), true, "the test app must keep its state in the isolated profile");
   assert.equal(mentionsMarker(realSettings), false, "the test app must never write the installed app's settings");
-  console.log("PASS: boot, search, traffic reading, VirusTotal setup and results, block, turn off and on, Block all, hidden restart, cached results, allow, denied remote open, clean exit");
+  console.log("PASS: boot, search, traffic reading, Connections view, VirusTotal setup and results, block, turn off and on, Block all, hidden restart, cached results, allow, denied remote open, clean exit");
 } catch (error) {
   if (browser) {
     try { console.error(await browser.execute(() => document.body.innerText.slice(-4000))); } catch { /* page already gone */ }

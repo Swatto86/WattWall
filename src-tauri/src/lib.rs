@@ -3,12 +3,18 @@
 //! `tray.rs`.
 
 mod com;
+mod dns;
 mod engine;
 mod fakewall;
 mod firewall;
+mod monitor;
 mod net;
 mod programs;
+mod resolver;
+mod rows;
+mod sockets;
 mod store;
+mod tables;
 mod task;
 mod taskbar;
 mod traffic;
@@ -26,36 +32,20 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{Emitter, Manager, State, WindowEvent};
 use wattwall_core::virustotal::Limits;
-use wattwall_core::{exe_name, guard, Guard, Row};
 
 use engine::Engine;
-use programs::{icon_data_url, is_elevated, publisher};
-use virustotal::{VirusTotal, VtRowDto, VtSummaryDto};
+use monitor::Monitor;
+use programs::is_elevated;
+use rows::{map_row, RowDto};
+use virustotal::{VirusTotal, VtSummaryDto};
 
 struct Watt {
     engine: Engine,
     icons: Mutex<HashMap<String, String>>,
     publishers: Mutex<HashMap<String, String>>,
     virustotal: VirusTotal,
+    monitor: Monitor,
     hidden: bool,
-}
-
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct RowDto {
-    path: String,
-    name: String,
-    publisher: String,
-    icon: String,
-    blocked: bool,
-    enforced: bool,
-    connected: bool,
-    last_seen: Option<i64>,
-    needs_confirmation: bool,
-    cannot_block: bool,
-    warning: String,
-    /// None while the VirusTotal check is off.
-    virustotal: Option<VtRowDto>,
 }
 
 #[derive(Serialize, Clone)]
@@ -72,61 +62,9 @@ struct StateDto {
     elevated: bool,
     /// Block All: every program is cut off from the network.
     block_all: bool,
+    /// The Connections view looks up host names for far addresses.
+    resolve_names: bool,
     virustotal: VtSummaryDto,
-}
-
-fn map_row(row: &Row, app: &Watt) -> RowDto {
-    let key = row.path.to_ascii_lowercase();
-    let icon = if row.path.eq_ignore_ascii_case("System") {
-        String::new()
-    } else {
-        cached(&app.icons, &key, || {
-            icon_data_url(&row.path).unwrap_or_default()
-        })
-    };
-    let publisher = if row.path.eq_ignore_ascii_case("System") {
-        String::new()
-    } else {
-        cached(&app.publishers, &key, || {
-            publisher(&row.path).unwrap_or_default()
-        })
-    };
-    let name = exe_name(&row.path).unwrap_or(&row.name);
-    let warning = match guard(name, false, row.cannot_block) {
-        Guard::Ok => String::new(),
-        Guard::Confirm(text) | Guard::Impossible(text) => text.to_string(),
-    };
-    RowDto {
-        path: row.path.clone(),
-        name: row.name.clone(),
-        publisher,
-        icon,
-        blocked: row.blocked,
-        enforced: row.enforced,
-        connected: row.connected,
-        last_seen: row.last_seen,
-        needs_confirmation: row.needs_confirmation,
-        cannot_block: row.cannot_block,
-        warning,
-        virustotal: None,
-    }
-}
-
-fn cached(
-    map: &Mutex<HashMap<String, String>>,
-    key: &str,
-    make: impl FnOnce() -> String,
-) -> String {
-    if let Ok(guard) = map.lock() {
-        if let Some(found) = guard.get(key) {
-            return found.clone();
-        }
-    }
-    let value = make();
-    if let Ok(mut guard) = map.lock() {
-        guard.insert(key.to_string(), value.clone());
-    }
-    value
 }
 
 fn snapshot(app: &Watt) -> Result<StateDto, String> {
@@ -155,6 +93,7 @@ fn snapshot(app: &Watt) -> Result<StateDto, String> {
         autostart_reason: autostart.reason,
         elevated,
         block_all,
+        resolve_names: app.engine.resolve_names(),
         virustotal,
     })
 }
@@ -324,6 +263,7 @@ pub fn run() {
     let test_copy = engine.is_test_copy();
     let watt = Watt {
         virustotal: VirusTotal::open(engine.data_dir(), test_copy),
+        monitor: Monitor::open(test_copy, engine.data_dir()),
         engine,
         icons: Mutex::new(HashMap::new()),
         publishers: Mutex::new(HashMap::new()),
@@ -361,6 +301,7 @@ pub fn run() {
                     }
                 })
                 .map_err(|err| std::io::Error::other(err.to_string()))?;
+            handle.state::<Watt>().monitor.names.start_workers()?;
             let flag = stop.clone();
             let lookups = handle.clone();
             std::thread::Builder::new()
@@ -391,6 +332,9 @@ pub fn run() {
             virustotal_quota,
             set_virustotal,
             remove_virustotal_key,
+            monitor::monitor_snapshot,
+            monitor::monitor_close,
+            monitor::set_resolve_names,
             started_hidden,
             quit_app
         ])
@@ -401,6 +345,9 @@ pub fn run() {
                 if let tauri::RunEvent::Exit = event {
                     if let Some(stop) = app.try_state::<Arc<AtomicBool>>() {
                         stop.store(true, Ordering::Relaxed);
+                    }
+                    if let Some(watt) = app.try_state::<Watt>() {
+                        watt.monitor.names.stop();
                     }
                 }
             });
