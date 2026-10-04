@@ -1,0 +1,6 @@
+# Code files over 400 lines when the size check was adopted, with their size then.
+# They may not grow: split one, or give it a "size-exception: <reason>" line, to take it off this list.
+# pwsh ~/.agents/scripts/check-file-size.ps1 -WriteBaseline tightens it; it never adds a file or raises a size.
+crates/wattwall-core/src/virustotal.rs	547
+src-tauri/src/lib.rs	413
+src-tauri/src/virustotal.rs	533
