@@ -1,7 +1,7 @@
 {
   "name": "wattwall",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "description": "WattWall: block chosen programs in the Windows Firewall",
   "author": "Swatto",

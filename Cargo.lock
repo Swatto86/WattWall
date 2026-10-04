@@ -4591,7 +4591,7 @@ dependencies = [
 
 [[package]]
 name = "wattwall-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4601,7 +4601,7 @@ dependencies = [
 
 [[package]]
 name = "wattwall-desktop"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "dirs 6.0.0",
  "reqwest",
